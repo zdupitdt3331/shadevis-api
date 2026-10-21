@@ -327,6 +327,13 @@ const server = http.createServer(async (req, res) => {
         if (!launcherPasswordOk(launcher, body.password)) return json(res, 401, { error: 'Неверный пароль' });
         account = await store.createAccount(adoptLauncherAccount(launcher));
       }
+      const loginHwid = normalizeHwid(body.hwid);
+      if (loginHwid && !account.hwid) {
+        const owner = await store.hwidOwner(loginHwid);
+        if (!owner || owner.toLowerCase() === account.nick.toLowerCase()) {
+          account = await store.setHwid(account.nick, loginHwid);
+        }
+      }
       const token = await issueToken(account.nick);
       return json(res, 200, { token, profile: publicProfile(account) });
     }
