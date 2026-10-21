@@ -109,6 +109,12 @@ function writeJson(db) {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalize(row) {
   if (!row) return null;
   return {
@@ -119,8 +125,8 @@ function normalize(row) {
     role: row.role || 'User',
     plan: row.plan || 'Classic',
     hwid: row.hwid || null,
-    confirmedAt: row.confirmedAt || row.confirmed_at || null,
-    createdAt: row.createdAt || row.created_at || null,
+    confirmedAt: toNumber(row.confirmedAt || row.confirmed_at),
+    createdAt: toNumber(row.createdAt || row.created_at),
   };
 }
 
