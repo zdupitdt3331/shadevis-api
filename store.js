@@ -418,6 +418,21 @@ async function listCloudMessages(afterId, limit) {
     .map((item) => ({ id: item.id, nick: item.nick, text: item.text, at: item.at }));
 }
 
+
+async function clearCloudMessages() {
+  if (pgPool) {
+    await pgPool.query('DELETE FROM cloud_messages');
+    return;
+  }
+  if (mysqlPool) {
+    await mysqlPool.query('DELETE FROM cloud_messages');
+    return;
+  }
+  const db = readJson();
+  db.cloud = [];
+  writeJson(db);
+}
+
 module.exports = {
   backend: () => (pgPool ? 'postgres' : mysqlPool ? 'mysql' : 'json'),
   findAccount,
@@ -433,4 +448,5 @@ module.exports = {
   setPassword,
   addCloudMessage,
   listCloudMessages,
+  clearCloudMessages,
 };

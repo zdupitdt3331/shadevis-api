@@ -278,6 +278,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (route === '/api/cloud/clear' && req.method === 'POST') {
+      const body = await readBody(req);
+      const expected = process.env.OWNER_KEY || '';
+      if (!expected || String(body.key || '') !== expected) {
+        return json(res, 403, { error: 'Неверный ключ' });
+      }
+      await store.clearCloudMessages();
+      return json(res, 200, { cleared: true });
+    }
+
     if (route === '/api/cloud/messages' && req.method === 'GET') {
       const after = Number(url.searchParams.get('after') || 0);
       const messages = await store.listCloudMessages(after, 60);
