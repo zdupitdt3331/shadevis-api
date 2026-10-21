@@ -278,6 +278,33 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (route === '/api/cloud/messages' && req.method === 'GET') {
+      const after = Number(url.searchParams.get('after') || 0);
+      const messages = await store.listCloudMessages(after, 60);
+      return json(res, 200, { messages, cursor: messages.length ? messages[messages.length - 1].id : after });
+    }
+
+    if (route === '/api/cloud/send' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || '').trim().slice(0, 16);
+      const text = String(body.text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 300);
+      if (!/^[A-Za-z0-9_]{3,16}$/.test(nick)) {
+        return json(res, 400, { error: 'Ник: 3-16 символов, латиница, цифры и _' });
+      }
+      if (!text) {
+        return json(res, 400, { error: 'Пустое сообщение' });
+      }
+      const now = Date.now();
+      if (!globalThis.__cloudLast) globalThis.__cloudLast = new Map();
+      const last = globalThis.__cloudLast.get(nick.toLowerCase()) || 0;
+      if (now - last < 1200) {
+        return json(res, 429, { error: 'Слишком часто, подожди секунду' });
+      }
+      globalThis.__cloudLast.set(nick.toLowerCase(), now);
+      const message = await store.addCloudMessage(nick, text, normalizeHwid(body.hwid));
+      return json(res, 200, { message });
+    }
+
     if (route === '/api/register' && req.method === 'POST') {
       const body = await readBody(req);
       const nick = String(body.nick || '').trim();

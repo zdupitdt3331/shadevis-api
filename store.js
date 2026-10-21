@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_nick ON sessions (nick);
+CREATE TABLE IF NOT EXISTS cloud_messages (
+  id BIGSERIAL PRIMARY KEY,
+  nick VARCHAR(32) NOT NULL,
+  text VARCHAR(300) NOT NULL,
+  hwid CHAR(64) NULL,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_id ON cloud_messages (id);
 `;
 
 if (pgPool) {
@@ -359,6 +367,57 @@ async function setPassword(nick, salt, hash) {
   return normalize(found);
 }
 
+
+async function addCloudMessage(nick, text, hwid) {
+  const createdAt = Date.now();
+  if (pgPool) {
+    const { rows } = await pgPool.query(
+      'INSERT INTO cloud_messages (nick, text, hwid, created_at) VALUES ($1,$2,$3,$4) RETURNING id',
+      [nick, text, hwid || null, createdAt]
+    );
+    return { id: Number(rows[0].id), nick, text, at: createdAt };
+  }
+  if (mysqlPool) {
+    const [result] = await mysqlPool.query(
+      'INSERT INTO cloud_messages (nick, text, hwid, created_at) VALUES (?,?,?,?)',
+      [nick, text, hwid || null, createdAt]
+    );
+    return { id: Number(result.insertId), nick, text, at: createdAt };
+  }
+  const db = readJson();
+  if (!Array.isArray(db.cloud)) db.cloud = [];
+  const id = db.cloud.reduce((max, item) => Math.max(max, item.id), 0) + 1;
+  const message = { id, nick, text, hwid: hwid || null, at: createdAt };
+  db.cloud.push(message);
+  if (db.cloud.length > 500) db.cloud.splice(0, db.cloud.length - 500);
+  writeJson(db);
+  return { id, nick, text, at: createdAt };
+}
+
+async function listCloudMessages(afterId, limit) {
+  const safeLimit = Math.max(1, Math.min(100, limit || 50));
+  if (pgPool) {
+    const { rows } = await pgPool.query(
+      'SELECT id, nick, text, created_at FROM cloud_messages WHERE id > $1 ORDER BY id ASC LIMIT $2',
+      [Number(afterId) || 0, safeLimit]
+    );
+    return rows.map((row) => ({ id: Number(row.id), nick: row.nick, text: row.text, at: Number(row.created_at) }));
+  }
+  if (mysqlPool) {
+    const [rows] = await mysqlPool.query(
+      'SELECT id, nick, text, created_at FROM cloud_messages WHERE id > ? ORDER BY id ASC LIMIT ?',
+      [Number(afterId) || 0, safeLimit]
+    );
+    return rows.map((row) => ({ id: Number(row.id), nick: row.nick, text: row.text, at: Number(row.created_at) }));
+  }
+  const db = readJson();
+  const list = Array.isArray(db.cloud) ? db.cloud : [];
+  return list
+    .filter((item) => item.id > (Number(afterId) || 0))
+    .slice(0, safeLimit)
+    .map((item) => ({ id: item.id, nick: item.nick, text: item.text, at: item.at }));
+}
+
 module.exports = {
   backend: () => (pgPool ? 'postgres' : mysqlPool ? 'mysql' : 'json'),
   findAccount,
@@ -372,4 +431,6 @@ module.exports = {
   updateAccount,
   clearHwid,
   setPassword,
+  addCloudMessage,
+  listCloudMessages,
 };
