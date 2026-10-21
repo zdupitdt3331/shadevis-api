@@ -1,12 +1,14 @@
 ﻿<#
   Публикация кода на GitHub.
-  Запуск:  powershell -ExecutionPolicy Bypass -File Push-ToGitHub.ps1 -RepoUrl https://github.com/ЛОГИН/shadevis-api.git
-
+  Варианты запуска:
+     powershell -ExecutionPolicy Bypass -File Push-ToGitHub.ps1
+        (спросит ссылку на репозиторий)
+     powershell -ExecutionPolicy Bypass -File Push-ToGitHub.ps1 -RepoUrl https://github.com/ЛОГИН/shadevis-api.git
+     powershell -ExecutionPolicy Bypass -File Push-ToGitHub.ps1 https://github.com/ЛОГИН/shadevis-api.git
   Репозиторий создай заранее (пустой, без README): https://github.com/new
-  При первом push откроется окно входа в GitHub (Git Credential Manager).
 #>
 param(
-  [Parameter(Mandatory=$true)][string]$RepoUrl
+  [Parameter(Position=0)][string]$RepoUrl
 )
 
 $ErrorActionPreference='Stop'
@@ -15,6 +17,18 @@ if (!$git) { $git = 'C:\Program Files\Git\cmd\git.exe' }
 if (!(Test-Path $git)) { throw 'git не найден — установи Git for Windows' }
 
 Set-Location $PSScriptRoot
+
+if ([string]::IsNullOrWhiteSpace($RepoUrl)) {
+  $file = Join-Path $PSScriptRoot 'repo-url.txt'
+  if (Test-Path $file) {
+    $RepoUrl = (Get-Content $file -Raw).Trim()
+  }
+}
+if ([string]::IsNullOrWhiteSpace($RepoUrl)) {
+  $RepoUrl = (Read-Host 'Вставь ссылку на репозиторий (https://github.com/ЛОГИН/shadevis-api.git)').Trim()
+}
+if ([string]::IsNullOrWhiteSpace($RepoUrl)) { throw 'Ссылка на репозиторий не указана' }
+if (!$RepoUrl.EndsWith('.git')) { $RepoUrl = $RepoUrl.TrimEnd('/') + '.git' }
 
 if (!(Test-Path (Join-Path $PSScriptRoot '.git'))) {
   & $git init | Out-Host
@@ -27,7 +41,7 @@ if (!(Test-Path (Join-Path $PSScriptRoot '.git'))) {
 
 & $git remote remove origin 2>$null
 & $git remote add origin $RepoUrl
-Write-Host "Пушу в $RepoUrl ..."
+Write-Host "Пушу в $RepoUrl ..." -ForegroundColor Cyan
 & $git push -u origin main
 if ($LASTEXITCODE -ne 0) { throw 'push не удался (проверь вход в GitHub)' }
 
