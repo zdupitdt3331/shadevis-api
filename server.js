@@ -338,6 +338,25 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { token, profile: publicProfile(account) });
     }
 
+    if (route === '/api/account/recover' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || '').trim();
+      const password = String(body.password || '');
+      const hwid = normalizeHwid(body.hwid);
+      if (!nick || password.length < 6 || !hwid) {
+        return json(res, 400, { error: 'Нужны ник, новый пароль (6+) и HWID' });
+      }
+      const account = await store.findAccount(nick);
+      if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
+      if (!account.hwid || account.hwid.toLowerCase() !== hwid) {
+        return json(res, 403, { error: 'Восстановление доступно только с привязанного ПК' });
+      }
+      const { salt, hash } = hashPassword(password);
+      const updated = await store.setPassword(nick, salt, hash);
+      const token = await issueToken(updated.nick);
+      return json(res, 200, { token, profile: publicProfile(updated), recovered: true });
+    }
+
     if (route === '/api/launcher' && req.method === 'GET') {
       const hwid = launcherHwid();
       const accounts = launcherAccounts().map((item) => ({ nick: item.Nick, role: item.Role || 'User' }));

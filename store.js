@@ -337,6 +337,28 @@ async function clearHwid(nick) {
   return normalize(found);
 }
 
+
+async function setPassword(nick, salt, hash) {
+  const key = String(nick || '').toLowerCase();
+  if (pgPool) {
+    await pgPool.query('UPDATE accounts SET salt = $1, hash = $2, launcher = FALSE WHERE LOWER(nick) = $3', [salt, hash, key]);
+    return findAccount(nick);
+  }
+  if (mysqlPool) {
+    await mysqlPool.query('UPDATE accounts SET salt = ?, hash = ?, launcher = 0 WHERE LOWER(nick) = ?', [salt, hash, key]);
+    return findAccount(nick);
+  }
+  const db = readJson();
+  const found = db.accounts.find((a) => String(a.nick).toLowerCase() === key);
+  if (found) {
+    found.salt = salt;
+    found.hash = hash;
+    found.launcher = false;
+    writeJson(db);
+  }
+  return normalize(found);
+}
+
 module.exports = {
   backend: () => (pgPool ? 'postgres' : mysqlPool ? 'mysql' : 'json'),
   findAccount,
@@ -349,4 +371,5 @@ module.exports = {
   listAccounts,
   updateAccount,
   clearHwid,
+  setPassword,
 };
