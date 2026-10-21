@@ -291,6 +291,52 @@ async function listAccounts() {
   return readJson().accounts.map(normalize);
 }
 
+
+async function updateAccount(nick, fields) {
+  const key = String(nick || '').toLowerCase();
+  const existing = await findAccount(nick);
+  if (!existing) return null;
+  const role = fields.role || existing.role;
+  const plan = fields.plan || existing.plan;
+
+  if (pgPool) {
+    await pgPool.query('UPDATE accounts SET role = $1, plan = $2 WHERE LOWER(nick) = $3', [role, plan, key]);
+    return findAccount(nick);
+  }
+  if (mysqlPool) {
+    await mysqlPool.query('UPDATE accounts SET role = ?, plan = ? WHERE LOWER(nick) = ?', [role, plan, key]);
+    return findAccount(nick);
+  }
+  const db = readJson();
+  const found = db.accounts.find((a) => String(a.nick).toLowerCase() === key);
+  if (found) {
+    found.role = role;
+    found.plan = plan;
+    writeJson(db);
+  }
+  return normalize(found);
+}
+
+async function clearHwid(nick) {
+  const key = String(nick || '').toLowerCase();
+  if (pgPool) {
+    await pgPool.query('UPDATE accounts SET hwid = NULL, confirmed_at = NULL WHERE LOWER(nick) = $1', [key]);
+    return findAccount(nick);
+  }
+  if (mysqlPool) {
+    await mysqlPool.query('UPDATE accounts SET hwid = NULL, confirmed_at = NULL WHERE LOWER(nick) = ?', [key]);
+    return findAccount(nick);
+  }
+  const db = readJson();
+  const found = db.accounts.find((a) => String(a.nick).toLowerCase() === key);
+  if (found) {
+    found.hwid = null;
+    found.confirmedAt = null;
+    writeJson(db);
+  }
+  return normalize(found);
+}
+
 module.exports = {
   backend: () => (pgPool ? 'postgres' : mysqlPool ? 'mysql' : 'json'),
   findAccount,
@@ -301,4 +347,6 @@ module.exports = {
   findSession,
   deleteSession,
   listAccounts,
+  updateAccount,
+  clearHwid,
 };

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Админка — ShadeVisuals</title>
+<link rel="icon" href="assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="profile-page">
+
+<div class="bg-glow bg-glow--one"></div>
+<div class="bg-glow bg-glow--two"></div>
+
+<header class="nav">
+  <a class="nav__brand" href="index.html">
+    <img src="assets/logo.png" alt="ShadeVisuals" width="36" height="36">
+    <span>ShadeVisuals</span>
+  </a>
+  <nav class="nav__links">
+    <a href="index.html">Главная</a>
+    <a href="profile.html">Профиль</a>
+    <a href="admin.html" class="is-active">Админка</a>
+  </nav>
+  <a class="btn btn--small" href="https://t.me/ShadeVisualsPrivat_bot" target="_blank" rel="noopener">Telegram</a>
+</header>
+
+<main class="admin">
+  <section class="card admin__gate is-hidden" id="gate">
+    <h3 class="card__title">Нужен вход</h3>
+    <p class="card__hint">Админка доступна только аккаунту с ролью Admin.</p>
+    <a class="btn" href="profile.html">Войти в профиле</a>
+  </section>
+
+  <section class="card admin__gate is-hidden" id="denied">
+    <h3 class="card__title">Нет доступа</h3>
+    <p class="card__hint" id="deniedText">У этого аккаунта нет роли Admin.</p>
+    <a class="btn btn--ghost" href="profile.html">В профиль</a>
+  </section>
+
+  <section id="panel" class="is-hidden">
+    <div class="admin__head">
+      <div>
+        <h2 class="admin__title">Аккаунты</h2>
+        <p class="admin__sub" id="adminSub">—</p>
+      </div>
+      <div class="admin__tools">
+        <input class="admin__search" id="search" type="text" placeholder="Поиск по нику...">
+        <button class="btn btn--ghost btn--small" id="refresh" type="button">Обновить</button>
+      </div>
+    </div>
+
+    <div class="card admin__card">
+      <table class="admin__table">
+        <thead>
+          <tr>
+            <th>Ник</th>
+            <th>Роль</th>
+            <th>План</th>
+            <th>HWID</th>
+            <th>Подтверждён</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="form__status" id="status"></p>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer__left">
+    <img src="assets/logo.png" alt="" width="28" height="28">
+    <span>ShadeVisuals © 2026</span>
+  </div>
+  <div class="footer__right">
+    <a href="profile.html">Профиль</a>
+    <span class="muted">Не связан с Mojang Studios и Microsoft</span>
+  </div>
+</footer>
+
+<script src="admin.js"></script>
+</body>
+</html>

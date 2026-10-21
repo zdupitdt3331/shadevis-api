@@ -235,6 +235,7 @@ function publicProfile(account) {
     confirmed: Boolean(account.confirmedAt),
     confirmedAt: account.confirmedAt || null,
     createdAt: account.createdAt || null,
+    admin: isAdminAccount(account),
   };
 }
 
@@ -242,6 +243,19 @@ async function issueToken(nick) {
   const token = crypto.randomBytes(32).toString('hex');
   await store.createSession(token, nick, Date.now() + 30 * 24 * 3600 * 1000);
   return token;
+}
+
+function isAdminAccount(account) {
+  if (!account) return false;
+  if (String(account.role || '').toLowerCase() === 'admin') return true;
+  const owner = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
+  return String(account.nick || '').toLowerCase() === owner;
+}
+
+async function requireAdmin(req) {
+  const account = await authAccount(req);
+  if (!account || !isAdminAccount(account)) return null;
+  return account;
 }
 
 async function authAccount(req) {
@@ -287,11 +301,12 @@ const server = http.createServer(async (req, res) => {
 
       const { salt, hash } = hashPassword(password);
       const providedHwid = normalizeHwid(body.hwid) || launcherHwid();
+      const ownerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
       const account = await store.createAccount({
         nick,
         salt,
         hash,
-        role: 'User',
+        role: nick.toLowerCase() === ownerNick ? 'Admin' : 'User',
         plan: 'Classic',
         hwid: providedHwid,
         confirmedAt: providedHwid ? Date.now() : null,
@@ -353,6 +368,51 @@ const server = http.createServer(async (req, res) => {
       const token = header.startsWith('Bearer ') ? header.slice(7) : '';
       await store.deleteSession(token);
       return json(res, 200, { ok: true });
+    }
+
+    if (route === '/api/admin/accounts' && req.method === 'GET') {
+      const admin = await requireAdmin(req);
+      if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
+      const accounts = (await store.listAccounts()).map((item) => ({
+        nick: item.nick,
+        role: item.role,
+        plan: item.plan,
+        hwid: item.hwid,
+        confirmedAt: item.confirmedAt,
+        createdAt: item.createdAt,
+        launcher: item.launcher,
+      }));
+      return json(res, 200, { accounts, admin: admin.nick, backend: store.backend() });
+    }
+
+    if (route === '/api/admin/update' && req.method === 'POST') {
+      const admin = await requireAdmin(req);
+      if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
+      const body = await readBody(req);
+      const nick = String(body.nick || '').trim();
+      if (!nick) return json(res, 400, { error: 'Укажи ник' });
+      const role = body.role ? String(body.role) : null;
+      const plan = body.plan ? String(body.plan) : null;
+      if (role && !['Admin', 'Media', 'User'].includes(role)) return json(res, 400, { error: 'Неизвестная роль' });
+      if (plan && !['Classic', 'Classic+Plus', 'None'].includes(plan)) return json(res, 400, { error: 'Неизвестный план' });
+      const updated = await store.updateAccount(nick, { role, plan });
+      if (!updated) return json(res, 404, { error: 'Аккаунт не найден' });
+      return json(res, 200, { profile: publicProfile(updated) });
+    }
+
+    if (route === '/api/admin/reset-hwid' && req.method === 'POST') {
+      const admin = await requireAdmin(req);
+      if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
+      const body = await readBody(req);
+      const updated = await store.clearHwid(String(body.nick || '').trim());
+      if (!updated) return json(res, 404, { error: 'Аккаунт не найден' });
+      return json(res, 200, { profile: publicProfile(updated) });
+    }
+
+    if (route === '/api/admin/me' && req.method === 'GET') {
+      const account = await authAccount(req);
+      if (!account) return json(res, 401, { error: 'Нужен вход' });
+      return json(res, 200, { admin: isAdminAccount(account), nick: account.nick, role: account.role });
     }
 
     if (route === '/api/support/send' && req.method === 'POST') {
