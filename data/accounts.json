@@ -1,0 +1,21 @@
+{
+  "accounts": [
+    {
+      "nick": "DeployTest",
+      "salt": "012f71e8e99c378aae9c38164f1f0e4b",
+      "hash": "8e26853f942a1dc0d07141674a5770dda52249a22fbcdba46817030be25cd958",
+      "launcher": 0,
+      "role": "User",
+      "plan": "Classic",
+      "hwid": null,
+      "confirmedAt": null,
+      "createdAt": 1792586459331
+    }
+  ],
+  "sessions": {
+    "db2d1f73fb246827d5744a9ec490fad05014dfadcc69352e4d1566fc1313c42d": {
+      "nick": "DeployTest",
+      "expiresAt": 1795178459332
+    }
+  }
+}

@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS accounts (
+  nick VARCHAR(32) PRIMARY KEY,
+  salt VARCHAR(64) NOT NULL DEFAULT '',
+  hash VARCHAR(128) NOT NULL DEFAULT '',
+  launcher BOOLEAN NOT NULL DEFAULT FALSE,
+  role VARCHAR(16) NOT NULL DEFAULT 'User',
+  plan VARCHAR(32) NOT NULL DEFAULT 'Classic',
+  hwid CHAR(64) NULL UNIQUE,
+  confirmed_at BIGINT NULL,
+  created_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token CHAR(64) PRIMARY KEY,
+  nick VARCHAR(32) NOT NULL,
+  expires_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_nick ON sessions (nick);
