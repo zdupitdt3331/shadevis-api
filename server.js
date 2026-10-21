@@ -357,6 +357,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { token, profile: publicProfile(updated), recovered: true });
     }
 
+    if (route === '/api/account/owner-reset' && req.method === 'POST') {
+      const body = await readBody(req);
+      const key = String(body.key || '');
+      const expected = process.env.OWNER_KEY || '';
+      if (!expected || key !== expected) {
+        return json(res, 403, { error: 'Неверный ключ владельца' });
+      }
+      const nick = String(body.nick || '').trim();
+      const password = String(body.password || '');
+      const ownerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
+      if (nick.toLowerCase() !== ownerNick) {
+        return json(res, 403, { error: 'Ключ подходит только для ника владельца' });
+      }
+      if (password.length < 6) {
+        return json(res, 400, { error: 'Пароль минимум 6 символов' });
+      }
+      const account = await store.findAccount(nick);
+      if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
+      const { salt, hash } = hashPassword(password);
+      const updated = await store.setPassword(account.nick, salt, hash);
+      return json(res, 200, { profile: publicProfile(updated), reset: true });
+    }
+
     if (route === '/api/launcher' && req.method === 'GET') {
       const hwid = launcherHwid();
       const accounts = launcherAccounts().map((item) => ({ nick: item.Nick, role: item.Role || 'User' }));
