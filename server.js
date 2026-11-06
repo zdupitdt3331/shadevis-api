@@ -10,9 +10,75 @@ const SITE_DIR = process.env.SITE_DIR
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
 const presence = new Map(); // name -> lastSeenMs
-const chatMessages = [];    // { id, name, text, ts }
-let chatId = 0;
-const CHAT_MAX = 200;
+// ---------- chat storage (Postgres, файл-фолбэк) ----------
+const CHAT_MAX = 500;
+const CHAT_FILE = path.join(DATA_DIR, 'chat.json');
+let chatPool = null;
+if (process.env.DATABASE_URL) {
+  try {
+    const { Pool } = require('pg');
+    chatPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 3,
+    });
+    chatPool.query(
+      'CREATE TABLE IF NOT EXISTS chat_messages (' +
+      'id BIGSERIAL PRIMARY KEY, name VARCHAR(32) NOT NULL, ' +
+      'text VARCHAR(200) NOT NULL, created_at BIGINT NOT NULL)'
+    ).catch(() => {});
+  } catch (error) {
+    console.warn('[chat] pg недоступен, работаю на файле:', error.message);
+    chatPool = null;
+  }
+}
+function chatLoadFile() {
+  try {
+    const data = JSON.parse(fs.readFileSync(CHAT_FILE, 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+function chatSaveFile(list) {
+  try {
+    fs.writeFileSync(CHAT_FILE, JSON.stringify(list.slice(-CHAT_MAX)));
+  } catch {
+    // ignore
+  }
+}
+let chatMemory = chatLoadFile();
+let chatSeq = chatMemory.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
+async function chatAdd(name, text) {
+  const now = Date.now();
+  if (chatPool) {
+    const result = await chatPool.query(
+      'INSERT INTO chat_messages(name, text, created_at) VALUES($1, $2, $3) RETURNING id',
+      [name, text, now]
+    );
+    return Number(result.rows[0].id);
+  }
+  chatSeq += 1;
+  chatMemory.push({ id: chatSeq, name, text, ts: now });
+  if (chatMemory.length > CHAT_MAX) chatMemory = chatMemory.slice(-CHAT_MAX);
+  chatSaveFile(chatMemory);
+  return chatSeq;
+}
+async function chatSince(since) {
+  if (chatPool) {
+    const result = await chatPool.query(
+      'SELECT id, name, text, created_at FROM chat_messages WHERE id > $1 ORDER BY id ASC LIMIT 200',
+      [since]
+    );
+    return result.rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      text: row.text,
+      ts: Number(row.created_at),
+    }));
+  }
+  return chatMemory.filter((item) => item.id > since).slice(-200);
+}
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -464,13 +530,13 @@ const server = http.createServer(async (req, res) => {
       const name = String(body.name || '').trim().slice(0, 32);
       const text = String(body.text || '').trim().slice(0, 200);
       if (!name || !text) return json(res, 400, { error: 'bad message' });
-      chatMessages.push({ id: ++chatId, name, text, ts: Date.now() });
-      while (chatMessages.length > CHAT_MAX) chatMessages.shift();
-      return json(res, 200, { ok: true, id: chatId });
+      const id = await chatAdd(name, text);
+      return json(res, 200, { ok: true, id });
     }
     if (route === '/v1/chat' && req.method === 'GET') {
       const since = Number(url.searchParams.get('since') || 0);
-      return json(res, 200, { messages: chatMessages.filter((m) => m.id > since) });
+      const messages = await chatSince(since);
+      return json(res, 200, { messages });
     }
     // ---------- /chat ----------
     if (route.startsWith('/api/')) {
