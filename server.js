@@ -1,18 +1,18 @@
 'use strict';
-
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const store = require('./store');
-
 const PORT = Number(process.env.PORT || 8090);
 const SITE_DIR = process.env.SITE_DIR
   || (fs.existsSync(path.join(__dirname, '..', 'site')) ? path.join(__dirname, '..', 'site') : path.join(__dirname, 'site'));
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
 const presence = new Map(); // name -> lastSeenMs
-
+const chatMessages = [];    // { id, name, text, ts }
+let chatId = 0;
+const CHAT_MAX = 200;
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -23,18 +23,13 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
 };
-
 fs.mkdirSync(DATA_DIR, { recursive: true });
-
-
-
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
 }
-
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
   cors(res);
@@ -44,7 +39,6 @@ function json(res, status, payload) {
   });
   res.end(body);
 }
-
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -69,31 +63,22 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
-
 function hashPassword(password, salt) {
   const useSalt = salt || crypto.randomBytes(16).toString('hex');
   const hash = crypto.pbkdf2Sync(password, useSalt, 120000, 32, 'sha256').toString('hex');
   return { salt: useSalt, hash };
 }
-
-
-
-
 function normalizeHwid(value) {
   const clean = String(value || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   return clean.length === 64 ? clean : null;
 }
-
 function formatHwid(hwid) {
   return hwid.toUpperCase().replace(/(.{4})(?!$)/g, '$1-');
 }
-
-
 // ---------- support chat ----------
 const SUPPORT_FILE = path.join(DATA_DIR, 'support.json');
 const SUPPORT_TOKEN = process.env.SUPPORT_BOT_TOKEN || '8956579827:AAHo-nHHU69HKA9UPlYa6htjVxk_bo1K-6c';
 const TG = 'https://api.telegram.org/bot' + SUPPORT_TOKEN;
-
 function loadSupport() {
   try {
     return JSON.parse(fs.readFileSync(SUPPORT_FILE, 'utf8'));
@@ -101,13 +86,10 @@ function loadSupport() {
     return { ownerChatId: null, lastUpdateId: 0, threads: {}, inbox: {} };
   }
 }
-
 function saveSupport(state) {
   fs.writeFileSync(SUPPORT_FILE, JSON.stringify(state, null, 2));
 }
-
 let supportState = loadSupport();
-
 async function tg(method, payload) {
   const response = await fetch(TG + '/' + method, {
     method: 'POST',
@@ -116,13 +98,11 @@ async function tg(method, payload) {
   });
   return response.json().catch(() => ({ ok: false }));
 }
-
 function supportThread(nick) {
   const key = String(nick || '').toLowerCase();
   if (!supportState.threads[key]) supportState.threads[key] = { messages: [], cursor: 0 };
   return supportState.threads[key];
 }
-
 function pushSupportMessage(nick, from, text) {
   const thread = supportThread(nick);
   thread.cursor += 1;
@@ -131,7 +111,6 @@ function pushSupportMessage(nick, from, text) {
   saveSupport(supportState);
   return thread.cursor;
 }
-
 async function pollSupport() {
   try {
     const params = supportState.lastUpdateId ? '?offset=' + (supportState.lastUpdateId + 1) + '&timeout=0' : '?timeout=0';
@@ -163,12 +142,9 @@ async function pollSupport() {
     // network hiccup, next tick
   }
 }
-
 setInterval(pollSupport, 4000);
-
 // ---------- launcher integration ----------
 const LAUNCHER_DIR = path.join(process.env.APPDATA || '', 'ShadeVis');
-
 function launcherHwid() {
   try {
     const raw = fs.readFileSync(path.join(LAUNCHER_DIR, 'hwid.txt'), 'utf8').trim();
@@ -177,7 +153,6 @@ function launcherHwid() {
     return null;
   }
 }
-
 function launcherAccounts() {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(LAUNCHER_DIR, 'accounts.json'), 'utf8'));
@@ -186,12 +161,10 @@ function launcherAccounts() {
     return [];
   }
 }
-
 function launcherAccount(nick) {
   const key = String(nick || '').toLowerCase();
   return launcherAccounts().find((item) => String(item.Nick || '').toLowerCase() === key) || null;
 }
-
 function launcherPasswordOk(record, password) {
   try {
     const salt = Buffer.from(String(record.Salt || ''), 'base64');
@@ -203,7 +176,6 @@ function launcherPasswordOk(record, password) {
     return false;
   }
 }
-
 function adoptLauncherAccount(record) {
   const hwid = launcherHwid();
   const account = {
@@ -219,14 +191,11 @@ function adoptLauncherAccount(record) {
   };
   return account;
 }
-
 function sitePasswordOk(account, password) {
   if (account.launcher) return false;
   const { hash } = hashPassword(String(password || ''), account.salt);
   return hash === account.hash;
 }
-
-
 function publicProfile(account) {
   return {
     nick: account.nick,
@@ -239,26 +208,22 @@ function publicProfile(account) {
     admin: isAdminAccount(account),
   };
 }
-
 async function issueToken(nick) {
   const token = crypto.randomBytes(32).toString('hex');
   await store.createSession(token, nick, Date.now() + 30 * 24 * 3600 * 1000);
   return token;
 }
-
 function isAdminAccount(account) {
   if (!account) return false;
   if (String(account.role || '').toLowerCase() === 'admin') return true;
   const owner = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
   return String(account.nick || '').toLowerCase() === owner;
 }
-
 async function requireAdmin(req) {
   const account = await authAccount(req);
   if (!account || !isAdminAccount(account)) return null;
   return account;
 }
-
 async function authAccount(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -266,18 +231,15 @@ async function authAccount(req) {
   if (!session || session.expiresAt < Date.now()) return null;
   return store.findAccount(session.nick);
 }
-
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const route = url.pathname;
-
   if (req.method === 'OPTIONS') {
     cors(res);
     res.writeHead(204);
     res.end();
     return;
   }
-
   try {
     if (route === '/api/register' && req.method === 'POST') {
       const body = await readBody(req);
@@ -285,11 +247,9 @@ const server = http.createServer(async (req, res) => {
       const password = String(body.password || '');
       if (!/^[A-Za-z0-9_]{3,16}$/.test(nick)) return json(res, 400, { error: 'Ник: 3-16 символов, латиница, цифры и _' });
       if (password.length < 6) return json(res, 400, { error: 'Пароль минимум 6 символов' });
-
       if (await store.findAccount(nick)) {
         return json(res, 409, { error: 'Этот ник уже занят — войди в аккаунт' });
       }
-
       const launcher = launcherAccount(nick);
       if (launcher) {
         if (!launcherPasswordOk(launcher, password)) {
@@ -299,7 +259,6 @@ const server = http.createServer(async (req, res) => {
         const token = await issueToken(adopted.nick);
         return json(res, 201, { token, profile: publicProfile(adopted), launcher: true });
       }
-
       const { salt, hash } = hashPassword(password);
       const providedHwid = normalizeHwid(body.hwid) || launcherHwid();
       const ownerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
@@ -316,7 +275,6 @@ const server = http.createServer(async (req, res) => {
       const token = await issueToken(account.nick);
       return json(res, 201, { token, profile: publicProfile(account) });
     }
-
     if (route === '/api/login' && req.method === 'POST') {
       const body = await readBody(req);
       let account = await store.findAccount(body.nick);
@@ -338,7 +296,6 @@ const server = http.createServer(async (req, res) => {
       const token = await issueToken(account.nick);
       return json(res, 200, { token, profile: publicProfile(account) });
     }
-
     if (route === '/api/account/recover' && req.method === 'POST') {
       const body = await readBody(req);
       const nick = String(body.nick || '').trim();
@@ -357,7 +314,6 @@ const server = http.createServer(async (req, res) => {
       const token = await issueToken(updated.nick);
       return json(res, 200, { token, profile: publicProfile(updated), recovered: true });
     }
-
     if (route === '/api/account/owner-reset' && req.method === 'POST') {
       const body = await readBody(req);
       const key = String(body.key || '');
@@ -380,7 +336,6 @@ const server = http.createServer(async (req, res) => {
       const updated = await store.setPassword(account.nick, salt, hash);
       return json(res, 200, { profile: publicProfile(updated), reset: true });
     }
-
     if (route === '/api/launcher' && req.method === 'GET') {
       const hwid = launcherHwid();
       const accounts = launcherAccounts().map((item) => ({ nick: item.Nick, role: item.Role || 'User' }));
@@ -392,13 +347,11 @@ const server = http.createServer(async (req, res) => {
         backend: store.backend(),
       });
     }
-
     if (route === '/api/profile' && req.method === 'GET') {
       const account = await authAccount(req);
       if (!account) return json(res, 401, { error: 'Нужен вход' });
       return json(res, 200, { profile: publicProfile(account) });
     }
-
     if (route === '/api/profile/hwid' && req.method === 'POST') {
       const account = await authAccount(req);
       if (!account) return json(res, 401, { error: 'Нужен вход' });
@@ -412,14 +365,12 @@ const server = http.createServer(async (req, res) => {
       const updated = await store.setHwid(account.nick, hwid);
       return json(res, 200, { profile: publicProfile(updated), display: formatHwid(hwid) });
     }
-
     if (route === '/api/logout' && req.method === 'POST') {
       const header = req.headers.authorization || '';
       const token = header.startsWith('Bearer ') ? header.slice(7) : '';
       await store.deleteSession(token);
       return json(res, 200, { ok: true });
     }
-
     if (route === '/api/admin/accounts' && req.method === 'GET') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
@@ -434,7 +385,6 @@ const server = http.createServer(async (req, res) => {
       }));
       return json(res, 200, { accounts, admin: admin.nick, backend: store.backend() });
     }
-
     if (route === '/api/admin/update' && req.method === 'POST') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
@@ -449,7 +399,6 @@ const server = http.createServer(async (req, res) => {
       if (!updated) return json(res, 404, { error: 'Аккаунт не найден' });
       return json(res, 200, { profile: publicProfile(updated) });
     }
-
     if (route === '/api/admin/reset-hwid' && req.method === 'POST') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
@@ -458,13 +407,11 @@ const server = http.createServer(async (req, res) => {
       if (!updated) return json(res, 404, { error: 'Аккаунт не найден' });
       return json(res, 200, { profile: publicProfile(updated) });
     }
-
     if (route === '/api/admin/me' && req.method === 'GET') {
       const account = await authAccount(req);
       if (!account) return json(res, 401, { error: 'Нужен вход' });
       return json(res, 200, { admin: isAdminAccount(account), nick: account.nick, role: account.role });
     }
-
     if (route === '/api/support/send' && req.method === 'POST') {
       const body = await readBody(req);
       const nick = String(body.nick || '').trim();
@@ -483,7 +430,6 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, { ok: true, delivered: Boolean(supportState.ownerChatId) });
     }
-
     if (route === '/api/support/messages' && req.method === 'GET') {
       const nick = String(url.searchParams.get('nick') || '').trim();
       const after = Number(url.searchParams.get('after') || 0);
@@ -492,7 +438,6 @@ const server = http.createServer(async (req, res) => {
       const messages = thread.messages.filter((item) => item.id > after);
       return json(res, 200, { messages, cursor: thread.cursor, online: Boolean(supportState.ownerChatId) });
     }
-
     // ---------- presence ----------
     if ((route === '/v1/presence' || route === '/api/presence') && req.method === 'POST') {
       const body = await readBody(req);
@@ -502,7 +447,6 @@ const server = http.createServer(async (req, res) => {
       else presence.set(name, Date.now());
       return json(res, 200, { ok: true, ttl: 90 });
     }
-
     if ((route === '/v1/presence' || route === '/api/presence') && req.method === 'GET') {
       const now = Date.now();
       const out = {};
@@ -512,14 +456,26 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, out);
     }
-
     if (route === '/v1/ping') return json(res, 200, { ok: true, ts: Date.now() });
     // ---------- /presence ----------
-
+    // ---------- chat ----------
+    if (route === '/v1/chat' && req.method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().slice(0, 32);
+      const text = String(body.text || '').trim().slice(0, 200);
+      if (!name || !text) return json(res, 400, { error: 'bad message' });
+      chatMessages.push({ id: ++chatId, name, text, ts: Date.now() });
+      while (chatMessages.length > CHAT_MAX) chatMessages.shift();
+      return json(res, 200, { ok: true, id: chatId });
+    }
+    if (route === '/v1/chat' && req.method === 'GET') {
+      const since = Number(url.searchParams.get('since') || 0);
+      return json(res, 200, { messages: chatMessages.filter((m) => m.id > since) });
+    }
+    // ---------- /chat ----------
     if (route.startsWith('/api/')) {
       return json(res, 404, { error: 'Неизвестный метод API' });
     }
-
     const relative = route === '/' ? 'index.html' : decodeURIComponent(route.replace(/^\//, ''));
     const filePath = path.join(SITE_DIR, relative);
     if (!filePath.startsWith(SITE_DIR)) {
@@ -542,7 +498,6 @@ const server = http.createServer(async (req, res) => {
     json(res, 500, { error: error.message || 'internal error' });
   }
 });
-
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log('ShadeVisuals site + API: http://127.0.0.1:' + PORT);
   console.log('profile: http://127.0.0.1:' + PORT + '/profile.html');
