@@ -11,6 +11,7 @@ const SITE_DIR = process.env.SITE_DIR
   || (fs.existsSync(path.join(__dirname, '..', 'site')) ? path.join(__dirname, '..', 'site') : path.join(__dirname, 'site'));
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
+const presence = new Map(); // name -> lastSeenMs
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -491,6 +492,29 @@ const server = http.createServer(async (req, res) => {
       const messages = thread.messages.filter((item) => item.id > after);
       return json(res, 200, { messages, cursor: thread.cursor, online: Boolean(supportState.ownerChatId) });
     }
+
+    // ---------- presence ----------
+    if ((route === '/v1/presence' || route === '/api/presence') && req.method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().toLowerCase();
+      if (!name || name.length > 32) return json(res, 400, { error: 'bad name' });
+      if (body.hidden) presence.delete(name);
+      else presence.set(name, Date.now());
+      return json(res, 200, { ok: true, ttl: 90 });
+    }
+
+    if ((route === '/v1/presence' || route === '/api/presence') && req.method === 'GET') {
+      const now = Date.now();
+      const out = {};
+      for (const [name, seen] of presence) {
+        if (now - seen <= 90000) out[name] = '';
+        else presence.delete(name);
+      }
+      return json(res, 200, out);
+    }
+
+    if (route === '/v1/ping') return json(res, 200, { ok: true, ts: Date.now() });
+    // ---------- /presence ----------
 
     if (route.startsWith('/api/')) {
       return json(res, 404, { error: 'Неизвестный метод API' });
