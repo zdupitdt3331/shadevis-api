@@ -587,6 +587,11 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/admin/accounts' && req.method === 'GET') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
+      const nowMs = Date.now();
+      const isOnline = (nick) => {
+        const seen = presence.get(String(nick || '').toLowerCase());
+        return Boolean(seen) && nowMs - seen <= 90000;
+      };
       const accounts = (await store.listAccounts())
         .filter((item) => !deletedAccounts.has(String(item.nick || '').toLowerCase()))
         .filter((item) => !item.deleted && !(item.salt === 'reset' && item.hash === 'reset' && !item.hwid))
@@ -598,6 +603,7 @@ const server = http.createServer(async (req, res) => {
         confirmedAt: item.confirmedAt,
         createdAt: item.createdAt,
         launcher: item.launcher,
+        online: isOnline(item.nick),
       }));
       return json(res, 200, { accounts, admin: admin.nick, backend: store.backend() });
     }
