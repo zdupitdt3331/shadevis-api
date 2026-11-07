@@ -96,7 +96,7 @@ async function telegramPoll() {
           writeMod(version, 'https://' + host + '/v1/mod/download');
           telegramHandled += 1;
           console.log('[telegram] mod ' + version + ' (' + buffer.length + ' bytes)');
-          await telegramSend(chatId, '✅ Мод ' + version + ' загружен (' + Math.round(buffer.length / 1048576) + ' МБ). Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
+          await telegramSend(chatId, '✅ Обновление загружено: мод ' + version + ' (' + Math.round(buffer.length / 1048576) + ' МБ). Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
         } catch (error) {
           console.log('[telegram] mod upload failed: ' + error.message);
           await telegramSend(chatId, '❌ Не удалось принять jar: ' + error.message);
