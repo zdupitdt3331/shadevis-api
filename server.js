@@ -83,7 +83,14 @@ async function telegramPoll() {
         try {
           const info = await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/getFile?file_id=' + message.document.file_id).then((r) => r.json());
           const filePath = info?.result?.file_path;
-          if (!filePath) throw new Error('no file_path');
+          if (!filePath) {
+            const sizeMb = Math.round((message.document.file_size || 0) / 1048576);
+            await telegramSend(chatId,
+              '⚠️ Файл ' + sizeMb + ' МБ — Telegram не даёт ботам скачивать файлы больше 20 МБ.\n' +
+              'Залей jar по ссылке (например в репозиторий shadevis-api: site/update/shadevisuals.jar) и отправь:\n' +
+              '/modadd <версия> <ссылка>');
+            continue;
+          }
           const fileResponse = await fetch('https://api.telegram.org/file/bot' + BOT_TOKEN + '/' + filePath);
           const buffer = Buffer.from(await fileResponse.arrayBuffer());
           fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -129,6 +136,27 @@ async function telegramPoll() {
         }
         writeMod(version, url);
         await telegramSend(chatId, '✅ Мод ' + version + ' опубликован. Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
+      } else if (text.startsWith('/modadd')) {
+        const [, version, url] = text.split(/\s+/);
+        if (!version || !url) {
+          await telegramSend(chatId, 'Формат: /modadd 0.0.52 https://.../shadevisuals-0.0.52-release.jar');
+          continue;
+        }
+        try {
+          await telegramSend(chatId, '⏳ Скачиваю мод ' + version + '…');
+          const response = await fetch(url);
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          const buffer = Buffer.from(await response.arrayBuffer());
+          if (buffer.length < 1024 || buffer.slice(0, 2).toString() !== 'PK') throw new Error('это не jar/zip');
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          fs.writeFileSync(MOD_JAR, buffer);
+          const host = process.env.PUBLIC_HOST || 'shadevis-api.onrender.com';
+          writeMod(version, 'https://' + host + '/v1/mod/download');
+          console.log('[telegram] modadd ' + version + ' (' + buffer.length + ' bytes)');
+          await telegramSend(chatId, '✅ Обновление загружено: мод ' + version + ' (' + Math.round(buffer.length / 1048576) + ' МБ). Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
+        } catch (error) {
+          await telegramSend(chatId, '❌ Не удалось скачать: ' + error.message);
+        }
       } else if (text.startsWith('/status')) {
         const current = readUpdate();
         await telegramSend(chatId,
