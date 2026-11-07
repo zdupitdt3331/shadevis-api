@@ -68,6 +68,14 @@ async function telegramPoll() {
         telegramHandled += 1;
         console.log('[telegram] release ' + version + ' -> ' + url);
         await telegramSend(chatId, '✅ Версия ' + version + ' опубликована. Лаунчеры увидят обновление.');
+      } else if (text.startsWith('/modversion')) {
+        const [, version, url] = text.split(/\s+/);
+        if (!version || !url) {
+          await telegramSend(chatId, 'Формат: /modversion 0.0.52 https://.../shadevisuals.jar');
+          continue;
+        }
+        writeUpdate(version, url);
+        await telegramSend(chatId, '✅ Мод ' + version + ' опубликован. Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
       } else if (text.startsWith('/status')) {
         const current = readUpdate();
         await telegramSend(chatId,
@@ -752,6 +760,13 @@ const server = http.createServer(async (req, res) => {
     }
     // ---------- /cosmetics ----------
     // ---------- updater ----------
+    if (route === '/v1/mod') {
+      const stored = readUpdate();
+      return json(res, 200, {
+        version: process.env.MOD_VERSION || stored.version || '0.0.51',
+        url: process.env.MOD_URL || (stored.url || '').replace('ShadeVisualsLoader.zip', 'shadevisuals.jar'),
+      });
+    }
     if (route === '/v1/update') {
       const stored = readUpdate();
       const version = stored.version || process.env.LAUNCHER_VERSION || '1.0.0';
