@@ -8,6 +8,85 @@ const PORT = Number(process.env.PORT || 8090);
 const SITE_DIR = process.env.SITE_DIR
   || (fs.existsSync(path.join(__dirname, '..', 'site')) ? path.join(__dirname, '..', 'site') : path.join(__dirname, 'site'));
 const DATA_DIR = path.join(__dirname, 'data');
+// ---------- обновления лаунчера + Telegram ----------
+const UPDATE_FILE = path.join(DATA_DIR, 'update.json');
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const ADMIN_CHAT = process.env.TELEGRAM_ADMIN_ID || '';
+function readUpdate() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(UPDATE_FILE, 'utf8'));
+    return { version: String(raw.version || ''), url: String(raw.url || '') };
+  } catch {
+    return { version: '', url: '' };
+  }
+}
+function writeUpdate(version, url) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(UPDATE_FILE, JSON.stringify({ version, url }, null, 2));
+}
+async function telegramSend(chatId, text) {
+  if (!BOT_TOKEN) return;
+  try {
+    await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    });
+  } catch {
+    // ignore
+  }
+}
+let telegramOffset = 0;
+let telegramLastError = "";
+let telegramHandled = 0;
+async function telegramPoll() {
+  if (!BOT_TOKEN) return;
+  try {
+    const response = await fetch(
+      'https://api.telegram.org/bot' + BOT_TOKEN + '/getUpdates?timeout=0&offset=' + (telegramOffset + 1),
+    );
+    const data = await response.json();
+    if (!data.ok || !Array.isArray(data.result)) return;
+    for (const update of data.result) {
+      telegramOffset = Math.max(telegramOffset, update.update_id);
+      const message = update.message;
+      if (!message || !message.text) continue;
+      const chatId = String(message.chat.id);
+      if (ADMIN_CHAT && chatId !== String(ADMIN_CHAT)) {
+        // подсказываем настоящий chat id, чтобы его можно было вписать в TELEGRAM_ADMIN_ID
+        await telegramSend(chatId, 'Ваш chat id: ' + chatId + '\nВпишите его в TELEGRAM_ADMIN_ID на Render.');
+        continue;
+      }
+      const text = message.text.trim();
+      if (text.startsWith('/release')) {
+        const [, version, url] = text.split(/\s+/);
+        if (!version || !url) {
+          await telegramSend(chatId, 'Формат: /release 1.0.2 https://.../ShadeVisualsLoader.zip');
+          continue;
+        }
+        writeUpdate(version, url);
+        telegramHandled += 1;
+        console.log('[telegram] release ' + version + ' -> ' + url);
+        await telegramSend(chatId, '✅ Версия ' + version + ' опубликована. Лаунчеры увидят обновление.');
+      } else if (text.startsWith('/status')) {
+        const current = readUpdate();
+        await telegramSend(chatId,
+          'Версия: <b>' + (current.version || 'не задана') + '</b>\n' + (current.url || ''));
+      } else if (text.startsWith('/start')) {
+        writeUpdate(readUpdate().version, readUpdate().url);
+        await telegramSend(chatId, 'Команды:\n/release <версия> <ссылка на zip>\n/status');
+      }
+    }
+  } catch (error) {
+    telegramLastError = String(error && error.message ? error.message : error);
+  }
+}
+if (BOT_TOKEN) {
+  console.log('[telegram] polling started, admin=' + (ADMIN_CHAT || 'any'));
+  setInterval(telegramPoll, 5000);
+} else {
+  console.log('[telegram] TELEGRAM_BOT_TOKEN is not set');
+}
 // ---------- удалённые аккаунты (переживают рестарт процесса) ----------
 const DELETED_FILE = path.join(DATA_DIR, 'deleted.json');
 let deletedAccounts = new Set();
@@ -375,6 +454,14 @@ const server = http.createServer(async (req, res) => {
       }
       const { salt, hash } = hashPassword(password);
       const providedHwid = normalizeHwid(body.hwid) || launcherHwid();
+      if (providedHwid) {
+        const owner = await store.hwidOwner(providedHwid);
+        if (owner && owner.toLowerCase() !== nick.toLowerCase()) {
+          return json(res, 409, {
+            error: 'Этот ПК уже привязан к аккаунту «' + owner + '» — войди в него или сбрось HWID в админке',
+          });
+        }
+      }
       const ownerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
       const account = await store.createAccount({
         nick,
@@ -607,6 +694,15 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, out);
     }
+    if (route === '/v1/telegram') {
+      return json(res, 200, {
+        configured: Boolean(BOT_TOKEN),
+        admin: ADMIN_CHAT || 'any',
+        handled: telegramHandled,
+        lastError: telegramLastError,
+        update: readUpdate(),
+      });
+    }
     if (route === '/v1/ping') return json(res, 200, { ok: true, ts: Date.now() });
     // ---------- /presence ----------
     // ---------- chat ----------
@@ -651,11 +747,11 @@ const server = http.createServer(async (req, res) => {
     // ---------- /cosmetics ----------
     // ---------- updater ----------
     if (route === '/v1/update') {
-      // zip с новой версией лоадера кладётся в site/update/ShadeVisualsLoader.zip
-      return json(res, 200, {
-        version: process.env.LAUNCHER_VERSION || '1.0.0',
-        url: (process.env.LAUNCHER_URL || ('http://' + (req.headers.host || 'localhost') + '/update/ShadeVisualsLoader.zip')),
-      });
+      const stored = readUpdate();
+      const version = stored.version || process.env.LAUNCHER_VERSION || '1.0.0';
+      const url = stored.url || process.env.LAUNCHER_URL
+        || ('http://' + (req.headers.host || 'localhost') + '/update/ShadeVisualsLoader.zip');
+      return json(res, 200, { version, url });
     }
     // ---------- /updater ----------
     // ---------- party ----------
@@ -743,7 +839,14 @@ const server = http.createServer(async (req, res) => {
       res.end(data);
     });
   } catch (error) {
-    json(res, 500, { error: error.message || 'internal error' });
+    const message = String(error && error.message ? error.message : '');
+    if (message.includes('accounts_hwid_key')) {
+      return json(res, 409, { error: 'Этот ПК уже привязан к другому аккаунту — войди в него или сбрось HWID в админке' });
+    }
+    if (message.includes('accounts_pkey') || message.includes('accounts_nick')) {
+      return json(res, 409, { error: 'Этот ник уже занят — войди в аккаунт' });
+    }
+    json(res, 500, { error: message || 'internal error' });
   }
 });
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
