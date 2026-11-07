@@ -8,6 +8,23 @@ const PORT = Number(process.env.PORT || 8090);
 const SITE_DIR = process.env.SITE_DIR
   || (fs.existsSync(path.join(__dirname, '..', 'site')) ? path.join(__dirname, '..', 'site') : path.join(__dirname, 'site'));
 const DATA_DIR = path.join(__dirname, 'data');
+// ---------- удалённые аккаунты (переживают рестарт процесса) ----------
+const DELETED_FILE = path.join(DATA_DIR, 'deleted.json');
+let deletedAccounts = new Set();
+try {
+  const raw = JSON.parse(fs.readFileSync(DELETED_FILE, 'utf8'));
+  if (Array.isArray(raw)) deletedAccounts = new Set(raw.map((n) => String(n).toLowerCase()));
+} catch {
+  deletedAccounts = new Set();
+}
+function saveDeleted() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DELETED_FILE, JSON.stringify([...deletedAccounts], null, 2));
+  } catch {
+    // ignore
+  }
+}
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
 const presence = new Map(); // name -> lastSeenMs
 // ---------- chat storage (Postgres, файл-фолбэк) ----------
@@ -331,12 +348,17 @@ const server = http.createServer(async (req, res) => {
       if (password.length < 6) return json(res, 400, { error: 'Пароль минимум 6 символов' });
       const existing = await store.findAccount(nick);
       if (existing) {
-        const locked = existing.deleted || (existing.salt === 'reset' && existing.hash === 'reset');
+        const tombstoned = deletedAccounts.has(String(existing.nick).toLowerCase());
+        const locked = tombstoned || existing.deleted || (existing.salt === 'reset' && existing.hash === 'reset');
         if (!locked) return json(res, 409, { error: 'Этот ник уже занят — войди в аккаунт' });
         // повторная регистрация после сброса HWID: новый пароль + привязка к этому ПК
         const { salt, hash } = hashPassword(password);
         let revived = await store.setPassword(existing.nick, salt, hash);
         revived = await store.updateAccount(existing.nick, { deleted: false, role: 'User', plan: 'Classic' }) || revived;
+        if (tombstoned) {
+          deletedAccounts.delete(String(existing.nick).toLowerCase());
+          saveDeleted();
+        }
         const newHwid = normalizeHwid(body.hwid);
         if (newHwid) revived = await store.setHwid(existing.nick, newHwid);
         const token = await issueToken(revived.nick);
@@ -371,7 +393,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       let account = await store.findAccount(body.nick);
       if (account) {
-        if (account.deleted) {
+        if (deletedAccounts.has(String(account.nick).toLowerCase()) || account.deleted) {
           return json(res, 403, {
             error: 'Аккаунт удалён администратором — зарегистрируйся заново',
             code: 'REENROLL',
@@ -478,7 +500,10 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/admin/accounts' && req.method === 'GET') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
-      const accounts = (await store.listAccounts()).filter((item) => !item.deleted).map((item) => ({
+      const accounts = (await store.listAccounts())
+        .filter((item) => !deletedAccounts.has(String(item.nick || '').toLowerCase()))
+        .filter((item) => !item.deleted && !(item.salt === 'reset' && item.hash === 'reset' && !item.hwid))
+        .map((item) => ({
         nick: item.nick,
         role: item.role,
         plan: item.plan,
@@ -528,6 +553,8 @@ const server = http.createServer(async (req, res) => {
       // помечаем удалённым, чистим HWID и пароль
       await store.clearHwid(account.nick);
       await store.setPassword(account.nick, 'reset', 'reset');
+      deletedAccounts.add(String(account.nick).toLowerCase());
+      saveDeleted();
       const updated = await store.updateAccount(account.nick, { deleted: true, role: 'User', plan: 'None' });
       return json(res, 200, { ok: true, profile: publicProfile(updated || account) });
     }
@@ -622,6 +649,15 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, out);
     }
     // ---------- /cosmetics ----------
+    // ---------- updater ----------
+    if (route === '/v1/update') {
+      // zip с новой версией лоадера кладётся в site/update/ShadeVisualsLoader.zip
+      return json(res, 200, {
+        version: process.env.LAUNCHER_VERSION || '1.0.0',
+        url: (process.env.LAUNCHER_URL || ('http://' + (req.headers.host || 'localhost') + '/update/ShadeVisualsLoader.zip')),
+      });
+    }
+    // ---------- /updater ----------
     // ---------- party ----------
     if (route === '/v1/party/invite' && req.method === 'POST') {
       const body = await readBody(req);
