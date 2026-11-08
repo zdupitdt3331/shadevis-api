@@ -198,6 +198,10 @@ function saveDeleted() {
 }
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
 const presence = new Map(); // name -> lastSeenMs
+const chatMessages = [];     // in-memory лента чата лоадера
+const chatLastBy = new Map(); // nickname -> last send ms
+const chatTyping = new Map(); // nickname|ts -> last typing ms
+let chatCursor = 0;
 // ---------- chat storage (Postgres, файл-фолбэк) ----------
 const CHAT_MAX = 2000;         // сколько последних сообщений держим в файле
 const CHAT_KEEP = 2000;        // сколько последних сообщений держим в БД (история для всех)
@@ -257,6 +261,16 @@ async function chatAdd(name, text) {
   if (chatMemory.length > CHAT_MAX) chatMemory = chatMemory.slice(-CHAT_MAX);
   chatSaveFile(chatMemory);
   return chatSeq;
+}
+
+async function chatClear() {
+  if (chatPool) {
+    await chatPool.query('DELETE FROM chat_messages');
+    return;
+  }
+  chatMemory = [];
+  chatSeq = 0;
+  chatSaveFile(chatMemory);
 }
 
 async function chatTrim() {
@@ -738,7 +752,7 @@ const server = http.createServer(async (req, res) => {
       const nowMs = Date.now();
       const isOnline = (nick) => {
         const seen = presence.get(String(nick || '').toLowerCase());
-        return Boolean(seen) && nowMs - seen <= 90000;
+        return Boolean(seen) && nowMs - seen <= 30000;
       };
       const accounts = (await store.listAccounts())
         .filter((item) => !deletedAccounts.has(String(item.nick || '').toLowerCase()))
@@ -851,7 +865,7 @@ const server = http.createServer(async (req, res) => {
       const now = Date.now();
       const out = {};
       for (const [name, seen] of presence) {
-        if (now - seen <= 90000) out[name] = '';
+        if (now - seen <= 30000) out[name] = '';
         else presence.delete(name);
       }
       return json(res, 200, out);
@@ -873,8 +887,8 @@ const server = http.createServer(async (req, res) => {
     // ---------- chat ----------
     if (route === '/v1/chat' && req.method === 'POST') {
       const body = await readBody(req);
-      const name = String(body.name || '').trim().slice(0, 32);
-      const text = String(body.text || '').trim().slice(0, 200);
+      const name = String(body.name || body.nickname || body.nick || '').trim().slice(0, 32);
+      const text = String(body.text || body.message || '').trim().slice(0, 300);
       if (!name || !text) return json(res, 400, { error: 'bad message' });
       const id = await chatAdd(name, text);
       if (Date.now() - lastChatTrimAt > 60000) {
@@ -887,7 +901,28 @@ const server = http.createServer(async (req, res) => {
     if (route === '/v1/chat' && req.method === 'GET') {
       const since = Number(url.searchParams.get('since') || 0);
       const messages = await chatSince(since);
-      return json(res, 200, { messages });
+      const now3 = Date.now();
+      const typing = [];
+      for (const [key, seen] of chatTyping) {
+        if (now3 - seen <= 4000) typing.push(key);
+        else chatTyping.delete(key);
+      }
+      return json(res, 200, { messages, typing });
+    }
+
+    if (route === '/v1/chat/clear' && req.method === 'POST') {
+      const key = String(req.headers['x-chat-key'] || '');
+      const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
+      if (key !== expected) return json(res, 403, { error: 'forbidden' });
+      await chatClear();
+      return json(res, 200, { ok: true });
+    }
+
+    if (route === '/v1/chat/typing' && req.method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name || body.nickname || body.nick || '').trim().slice(0, 32);
+      if (name) chatTyping.set(name, Date.now());
+      return json(res, 200, { ok: true });
     }
     // ---------- /chat ----------
 
