@@ -247,6 +247,19 @@ function chatSaveFile(list) {
 let chatMemory = chatLoadFile();
 let chatSeq = chatMemory.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
 
+async function roleOf(name) {
+  try {
+    const account = await store.findAccount(String(name || '').toLowerCase());
+    if (account && account.role) return account.role;
+  } catch { }
+  try {
+    const list = await store.listAccounts();
+    const found = (list || []).find((item) => String(item.nick || '').toLowerCase() === String(name || '').toLowerCase());
+    if (found && found.role) return found.role;
+  } catch { }
+  return 'User';
+}
+
 async function chatAdd(name, text) {
   const now = Date.now();
   if (chatPool) {
@@ -901,13 +914,18 @@ const server = http.createServer(async (req, res) => {
     if (route === '/v1/chat' && req.method === 'GET') {
       const since = Number(url.searchParams.get('since') || 0);
       const messages = await chatSince(since);
+      const roles = new Map();
+      for (const message of messages) {
+        if (!roles.has(message.name)) roles.set(message.name, await roleOf(message.name));
+      }
       const now3 = Date.now();
       const typing = [];
       for (const [key, seen] of chatTyping) {
         if (now3 - seen <= 4000) typing.push(key);
         else chatTyping.delete(key);
       }
-      return json(res, 200, { messages, typing });
+      const withRoles = messages.map((message) => ({ ...message, role: roles.get(message.name) || 'User' }));
+      return json(res, 200, { messages: withRoles, typing });
     }
 
     if (route === '/v1/chat/clear' && req.method === 'POST') {
