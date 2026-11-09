@@ -100,7 +100,7 @@ async function telegramPoll() {
           const detected = (caption.match(/\d+\.\d+\.\d+/) || [])[0];
           const version = detected || new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '.');
           const host = process.env.PUBLIC_HOST || 'shadevis-api.onrender.com';
-          writeMod(version, 'https://' + host + '/v1/mod/download');
+          await persistMod(version, 'https://' + host + '/v1/mod/download');
           telegramHandled += 1;
           console.log('[telegram] mod ' + version + ' (' + buffer.length + ' bytes)');
           await telegramSend(chatId, '✅ Обновление загружено: мод ' + version + ' (' + Math.round(buffer.length / 1048576) + ' МБ). Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
@@ -134,7 +134,7 @@ async function telegramPoll() {
           await telegramSend(chatId, 'Формат: /modversion 0.0.52 https://.../shadevisuals.jar');
           continue;
         }
-        writeMod(version, url);
+        await persistMod(version, url);
         await telegramSend(chatId, '✅ Мод ' + version + ' опубликован. Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
       } else if (text.startsWith('/modadd')) {
         const [, version, url] = text.split(/\s+/);
@@ -151,7 +151,7 @@ async function telegramPoll() {
           fs.mkdirSync(DATA_DIR, { recursive: true });
           fs.writeFileSync(MOD_JAR, buffer);
           const host = process.env.PUBLIC_HOST || 'shadevis-api.onrender.com';
-          writeMod(version, 'https://' + host + '/v1/mod/download');
+          await persistMod(version, 'https://' + host + '/v1/mod/download');
           console.log('[telegram] modadd ' + version + ' (' + buffer.length + ' bytes)');
           await telegramSend(chatId, '✅ Обновление загружено: мод ' + version + ' (' + Math.round(buffer.length / 1048576) + ' МБ). Лаунчеры покажут окно ОБНОВЛЕНИЕ.');
         } catch (error) {
@@ -264,6 +264,99 @@ async function roleOf(name) {
 }
 
 const avatarCache = new Map();
+
+let persistenceReady = false;
+
+async function ensurePersistence() {
+  if (!chatPool || persistenceReady) return;
+  try {
+    await chatPool.query(
+      'CREATE TABLE IF NOT EXISTS kv (key text PRIMARY KEY, value text NOT NULL)'
+    );
+    await chatPool.query(
+      'CREATE TABLE IF NOT EXISTS cosmetics_store (' +
+      'nick text PRIMARY KEY, cape text, wings text, bodywear text, pet text, hat text)'
+    );
+    await chatPool.query(
+      'CREATE TABLE IF NOT EXISTS party_state (id int PRIMARY KEY DEFAULT 1, payload jsonb NOT NULL)'
+    );
+    const cosmeticsRows = await chatPool.query('SELECT * FROM cosmetics_store');
+    for (const row of cosmeticsRows.rows) {
+      cosmetics.set(row.nick, {
+        cape: row.cape || '', wings: row.wings || '',
+        bodywear: row.bodywear || '', pet: row.pet || '', hat: row.hat || '',
+      });
+    }
+    const kvMod = await chatPool.query("SELECT value FROM kv WHERE key = 'mod'");
+    if (kvMod.rows[0] && kvMod.rows[0].value) {
+      try {
+        const parsed = JSON.parse(kvMod.rows[0].value);
+        if (parsed.version) writeMod(String(parsed.version), String(parsed.url || ''));
+      } catch { /* ignore */ }
+    }
+    const partyRow = await chatPool.query('SELECT payload FROM party_state WHERE id = 1');
+    if (partyRow.rows[0] && partyRow.rows[0].payload) {
+      const payload = partyRow.rows[0].payload;
+      parties.clear();
+      for (const [leader, data] of Object.entries(payload)) {
+        parties.set(leader, {
+          members: new Set(data.members || []),
+          invites: new Map(Object.entries(data.invites || {})),
+          markers: new Map(Object.entries(data.markers || {})),
+        });
+      }
+    }
+    persistenceReady = true;
+  } catch (error) {
+    console.log('[persist] init:', error.message);
+  }
+}
+
+async function persistMod(version, url) {
+  writeMod(version, url);
+  if (!chatPool) return;
+  try {
+    await ensurePersistence();
+    await chatPool.query(
+      "INSERT INTO kv(key, value) VALUES('mod', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [JSON.stringify({ version, url })]
+    );
+  } catch { /* ignore */ }
+}
+
+async function persistCosmetics() {
+  if (!chatPool) return;
+  try {
+    await ensurePersistence();
+    for (const [nick, look] of cosmetics) {
+      await chatPool.query(
+        'INSERT INTO cosmetics_store(nick, cape, wings, bodywear, pet, hat) VALUES($1,$2,$3,$4,$5,$6) ' +
+        'ON CONFLICT (nick) DO UPDATE SET cape = EXCLUDED.cape, wings = EXCLUDED.wings, ' +
+        'bodywear = EXCLUDED.bodywear, pet = EXCLUDED.pet, hat = EXCLUDED.hat',
+        [nick, look.cape || '', look.wings || '', look.bodywear || '', look.pet || '', look.hat || '']
+      );
+    }
+  } catch { /* ignore */ }
+}
+
+async function persistParty() {
+  if (!chatPool) return;
+  try {
+    await ensurePersistence();
+    const payload = {};
+    for (const [leader, party] of parties) {
+      payload[leader] = {
+        members: [...party.members],
+        invites: Object.fromEntries(party.invites),
+        markers: Object.fromEntries(party.markers),
+      };
+    }
+    await chatPool.query(
+      'INSERT INTO party_state(id, payload) VALUES(1, $1) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload',
+      [JSON.stringify(payload)]
+    );
+  } catch { /* ignore */ }
+}
 
 async function ensureAvatarTable() {
   if (!chatPool) return;
@@ -1123,6 +1216,7 @@ const server = http.createServer(async (req, res) => {
         hat: clean(body.hat),
       };
       cosmetics.set(name, look);
+      void persistCosmetics();
       return json(res, 200, { ok: true });
     }
 
@@ -1156,6 +1250,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (party.members.has(to)) return json(res, 400, { error: 'already in party' });
       party.invites.set(to, from);
+      void persistParty();
       return json(res, 200, { ok: true, leader, members: [...party.members] });
     }
 
@@ -1240,7 +1335,7 @@ const server = http.createServer(async (req, res) => {
         if (size < 1024) return json(res, 400, { error: 'empty body' });
         fs.writeFileSync(MOD_JAR, Buffer.concat(chunks));
         const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
-        writeMod(version, 'https://' + host + '/v1/mod/download');
+        await persistMod(version, 'https://' + host + '/v1/mod/download');
         return json(res, 200, { ok: true, version, size });
       } catch (error) {
         return json(res, 500, { error: String(error.message || error) });
@@ -1255,7 +1350,7 @@ const server = http.createServer(async (req, res) => {
       const version = String(body.version || '').trim().slice(0, 32);
       const url = String(body.url || '').trim().slice(0, 500);
       if (!version || !url) return json(res, 400, { error: 'version и url обязательны' });
-      writeMod(version, url);
+      await persistMod(version, url);
       return json(res, 200, { ok: true, version, url });
     }
 
@@ -1397,6 +1492,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 ensureAvatarTable().catch(() => {});
+ensurePersistence().catch(() => {});
 ensureStatsTable().catch(() => {});
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log('ShadeVisuals site + API: http://127.0.0.1:' + PORT);
