@@ -201,6 +201,7 @@ const presence = new Map(); // name -> lastSeenMs
 const chatMessages = [];     // in-memory лента чата лоадера
 const chatLastBy = new Map(); // nickname -> last send ms
 const chatTyping = new Map(); // nickname|ts -> last typing ms
+const playerStats = new Map(); // nick -> { total, servers: { name: seconds } }
 let chatCursor = 0;
 // ---------- chat storage (Postgres, файл-фолбэк) ----------
 const CHAT_MAX = 2000;         // сколько последних сообщений держим в файле
@@ -258,6 +259,50 @@ async function roleOf(name) {
     if (found && found.role) return found.role;
   } catch { }
   return 'User';
+}
+
+async function ensureStatsTable() {
+  if (!chatPool) return;
+  try {
+    await chatPool.query(
+      'CREATE TABLE IF NOT EXISTS player_stats (' +
+      'nick text NOT NULL, server text NOT NULL, seconds bigint NOT NULL DEFAULT 0, ' +
+      'PRIMARY KEY (nick, server))'
+    );
+  } catch (error) {
+    console.log('[stats] table:', error.message);
+  }
+}
+
+async function statsAdd(nick, server, seconds) {
+  const key = String(nick || '').toLowerCase();
+  if (!key || !seconds) return;
+  if (chatPool) {
+    await chatPool.query(
+      'INSERT INTO player_stats(nick, server, seconds) VALUES($1, $2, $3) ' +
+      'ON CONFLICT (nick, server) DO UPDATE SET seconds = player_stats.seconds + EXCLUDED.seconds',
+      [key, server, seconds]
+    );
+    return;
+  }
+  const stats = playerStats.get(key) || { total: 0, servers: {} };
+  stats.total += seconds;
+  stats.servers[server] = (stats.servers[server] || 0) + seconds;
+  playerStats.set(key, stats);
+}
+
+async function statsGet(nick) {
+  const key = String(nick || '').toLowerCase();
+  if (chatPool) {
+    const result = await chatPool.query(
+      'SELECT server, seconds FROM player_stats WHERE nick = $1 ORDER BY seconds DESC LIMIT 10',
+      [key]
+    );
+    const servers = result.rows.map((row) => ({ name: row.server, seconds: Number(row.seconds) }));
+    const total = servers.reduce((acc, item) => acc + item.seconds, 0);
+    return { total, servers };
+  }
+  return playerStats.get(key) || { total: 0, servers: {} };
 }
 
 async function chatAdd(name, text) {
@@ -911,6 +956,32 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, id });
     }
 
+    if (route.startsWith('/v1/profile') && req.method === 'GET') {
+      const nick = String(url.searchParams.get('nick') || route.split('/')[3] || '').trim();
+      if (!nick) return json(res, 400, { error: 'nick required' });
+      let role = 'User';
+      try {
+        const account = await store.findAccount(nick.toLowerCase());
+        if (account && account.role) role = account.role;
+      } catch { }
+      const stats = await statsGet(nick);
+      return json(res, 200, { nick, role, total: stats.total || 0, servers: stats.servers || [] });
+    }
+
+    if (route === '/v1/session' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || body.name || '').trim().toLowerCase();
+      const server = String(body.server || 'Неизвестно').trim().slice(0, 64);
+      const seconds = Math.max(0, Math.min(86400, Number(body.seconds || 0)));
+      if (!nick || !seconds) return json(res, 400, { error: 'bad session' });
+      try {
+        await statsAdd(nick, server, seconds);
+      } catch (error) {
+        return json(res, 500, { error: 'stats failed' });
+      }
+      return json(res, 200, { ok: true });
+    }
+
     if (route === '/v1/players' && req.method === 'GET') {
       try {
         const list = await store.listAccounts();
@@ -1115,6 +1186,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+ensureStatsTable().catch(() => {});
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log('ShadeVisuals site + API: http://127.0.0.1:' + PORT);
   console.log('profile: http://127.0.0.1:' + PORT + '/profile.html');
