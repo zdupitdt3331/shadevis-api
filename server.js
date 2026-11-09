@@ -911,6 +911,16 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, id });
     }
 
+    if (route === '/v1/players' && req.method === 'GET') {
+      try {
+        const list = await store.listAccounts();
+        const players = (list || []).map((item) => ({ nick: item.nick, role: item.role || 'User' }));
+        return json(res, 200, { players });
+      } catch (error) {
+        return json(res, 200, { players: [] });
+      }
+    }
+
     if (route === '/v1/chat' && req.method === 'GET') {
       const since = Number(url.searchParams.get('since') || 0);
       const messages = await chatSince(since);
