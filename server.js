@@ -198,6 +198,7 @@ function saveDeleted() {
 }
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
 const presence = new Map(); // name -> lastSeenMs
+const cosmetics = new Map(); // name -> { cape, wings, bodywear, pet }
 const chatMessages = [];     // in-memory лента чата лоадера
 const chatLastBy = new Map(); // nickname -> last send ms
 const chatTyping = new Map(); // nickname|ts -> last typing ms
