@@ -199,6 +199,7 @@ function saveDeleted() {
 const DB_FILE = path.join(DATA_DIR, 'accounts.json');
 const presence = new Map(); // name -> lastSeenMs
 const cosmetics = new Map(); // name -> { cape, wings, bodywear, pet }
+const parties = new Map();   // leader -> { members:Set, invites:Map(to -> from), markers:Map(nick -> marker) }
 const chatMessages = [];     // in-memory лента чата лоадера
 const chatLastBy = new Map(); // nickname -> last send ms
 const chatTyping = new Map(); // nickname|ts -> last typing ms
@@ -1119,6 +1120,7 @@ const server = http.createServer(async (req, res) => {
         wings: clean(body.wings),
         bodywear: clean(body.bodywear),
         pet: clean(body.pet),
+        hat: clean(body.hat),
       };
       cosmetics.set(name, look);
       return json(res, 200, { ok: true });
@@ -1131,7 +1133,120 @@ const server = http.createServer(async (req, res) => {
     }
     // ---------- /cosmetics ----------
 
+    // ---------- party ----------
+    function partyOf(nick) {
+      const key = String(nick || '').toLowerCase();
+      for (const [leader, party] of parties) {
+        if (leader === key || party.members.has(key)) return { leader, party };
+      }
+      return null;
+    }
+
+    if (route === '/api/party/invite' && req.method === 'POST') {
+      const body = await readBody(req);
+      const from = String(body.from || '').toLowerCase().slice(0, 24);
+      const to = String(body.to || '').toLowerCase().slice(0, 24);
+      if (!from || !to || from === to) return json(res, 400, { error: 'bad invite' });
+      const existing = partyOf(from);
+      const leader = existing ? existing.leader : from;
+      const party = existing ? existing.party : { members: new Set(), invites: new Map(), markers: new Map() };
+      if (!existing) {
+        party.members.add(from);
+        parties.set(leader, party);
+      }
+      if (party.members.has(to)) return json(res, 400, { error: 'already in party' });
+      party.invites.set(to, from);
+      return json(res, 200, { ok: true, leader, members: [...party.members] });
+    }
+
+    if (route === '/v1/party' && req.method === 'GET') {
+      const nick = String(url.searchParams.get('nick') || '').toLowerCase().slice(0, 24);
+      if (!nick) return json(res, 400, { error: 'nick required' });
+      const existing = partyOf(nick);
+      const pending = [];
+      for (const [leader, party] of parties) {
+        for (const [to, from] of party.invites) {
+          if (to === nick) pending.push({ from, leader });
+        }
+      }
+      if (!existing) return json(res, 200, { party: null, pending });
+      const markers = {};
+      for (const [member, marker] of existing.party.markers) markers[member] = marker;
+      return json(res, 200, {
+        party: { leader: existing.leader, members: [...existing.party.members] },
+        pending,
+        markers,
+      });
+    }
+
+    if (route === '/api/party/answer' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || '').toLowerCase().slice(0, 24);
+      const from = String(body.from || '').toLowerCase().slice(0, 24);
+      const accept = Boolean(body.accept);
+      if (!nick || !from) return json(res, 400, { error: 'bad answer' });
+      const existing = partyOf(from);
+      if (!existing || !existing.party.invites.has(nick)) return json(res, 404, { error: 'invite not found' });
+      existing.party.invites.delete(nick);
+      if (accept) {
+        existing.party.members.add(nick);
+        return json(res, 200, { ok: true, party: { leader: existing.leader, members: [...existing.party.members] } });
+      }
+      return json(res, 200, { ok: true, declined: true });
+    }
+
+    if (route === '/api/party/marker' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || '').toLowerCase().slice(0, 24);
+      if (!nick) return json(res, 400, { error: 'nick required' });
+      const existing = partyOf(nick);
+      if (!existing) return json(res, 404, { error: 'no party' });
+      if (body.clear) existing.party.markers.delete(nick);
+      else existing.party.markers.set(nick, { x: Number(body.x) || 0, y: Number(body.y) || 0, z: Number(body.z) || 0, dim: String(body.dim || '') });
+      return json(res, 200, { ok: true });
+    }
+
+    if (route === '/api/party/leave' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || '').toLowerCase().slice(0, 24);
+      const existing = partyOf(nick);
+      if (!existing) return json(res, 200, { ok: true });
+      existing.party.members.delete(nick);
+      existing.party.markers.delete(nick);
+      if (existing.leader === nick || existing.party.members.size === 0) parties.delete(existing.leader);
+      return json(res, 200, { ok: true });
+    }
+
     // ---------- updater ----------
+    if (route === '/api/mod/upload' && req.method === 'POST') {
+      const key = String(req.headers['x-chat-key'] || '');
+      const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
+      if (key !== expected) return json(res, 403, { error: 'forbidden' });
+      const version = String(url.searchParams.get('version') || '').trim().slice(0, 32);
+      if (!version) return json(res, 400, { error: 'version required' });
+      try {
+        const chunks = [];
+        let size = 0;
+        const done = new Promise((resolve, reject) => {
+          req.on('data', (chunk) => {
+            size += chunk.length;
+            if (size > 200 * 1024 * 1024) { reject(new Error('too large')); req.destroy(); return; }
+            chunks.push(chunk);
+          });
+          req.on('end', () => resolve(true));
+          req.on('error', reject);
+        });
+        await done;
+        if (size < 1024) return json(res, 400, { error: 'empty body' });
+        fs.writeFileSync(MOD_JAR, Buffer.concat(chunks));
+        const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+        writeMod(version, 'https://' + host + '/v1/mod/download');
+        return json(res, 200, { ok: true, version, size });
+      } catch (error) {
+        return json(res, 500, { error: String(error.message || error) });
+      }
+    }
+
     if (route === '/api/mod/publish' && req.method === 'POST') {
       const key = String(req.headers['x-chat-key'] || '');
       const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
