@@ -1132,6 +1132,18 @@ const server = http.createServer(async (req, res) => {
     // ---------- /cosmetics ----------
 
     // ---------- updater ----------
+    if (route === '/api/mod/publish' && req.method === 'POST') {
+      const key = String(req.headers['x-chat-key'] || '');
+      const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
+      if (key !== expected) return json(res, 403, { error: 'forbidden' });
+      const body = await readBody(req);
+      const version = String(body.version || '').trim().slice(0, 32);
+      const url = String(body.url || '').trim().slice(0, 500);
+      if (!version || !url) return json(res, 400, { error: 'version и url обязательны' });
+      writeMod(version, url);
+      return json(res, 200, { ok: true, version, url });
+    }
+
     if (route === '/v1/mod') {
       const stored = readMod();
       const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
