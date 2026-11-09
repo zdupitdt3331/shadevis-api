@@ -909,7 +909,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, profile: publicProfile(updated || account) });
     }
 
-    if (route === '/api/admin/delete' && req.methodod === 'POST') {
+    if (route === '/api/admin/delete' && req.method === 'POST') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
       const body = await readBody(req);
