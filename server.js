@@ -893,7 +893,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { profile: publicProfile(locked || cleared), reenroll: true });
     }
 
-    if (route === '/api/admin/delete' && req.method === 'POST') {
+    if (route === '/api/admin/reset-password' && req.method === 'POST') {
+      const admin = await requireAdmin(req);
+      if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
+      const body = await readBody(req);
+      const nick = String(body.nick || '').trim();
+      const password = String(body.password || '');
+      if (password.length < 6) return json(res, 400, { error: 'Пароль минимум 6 символов' });
+      const account = await store.findAccount(nick);
+      if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
+      const { salt, hash } = hashPassword(password);
+      const updated = await store.setPassword(account.nick, salt, hash);
+      return json(res, 200, { ok: true, profile: publicProfile(updated || account) });
+    }
+
+    if (route === '/api/admin/delete' && req.methodod === 'POST') {
       const admin = await requireAdmin(req);
       if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
       const body = await readBody(req);
