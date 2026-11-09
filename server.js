@@ -261,6 +261,44 @@ async function roleOf(name) {
   return 'User';
 }
 
+const avatarCache = new Map();
+
+async function ensureAvatarTable() {
+  if (!chatPool) return;
+  try {
+    await chatPool.query('CREATE TABLE IF NOT EXISTS player_avatars (nick text PRIMARY KEY, avatar text NOT NULL)');
+  } catch (error) {
+    console.log('[avatar] table:', error.message);
+  }
+}
+
+async function avatarGet(nick) {
+  const key = String(nick || '').toLowerCase();
+  if (!key) return '';
+  if (avatarCache.has(key)) return avatarCache.get(key);
+  if (!chatPool) return '';
+  try {
+    const result = await chatPool.query('SELECT avatar FROM player_avatars WHERE nick = $1', [key]);
+    const value = result.rows[0] ? result.rows[0].avatar : '';
+    avatarCache.set(key, value);
+    return value;
+  } catch {
+    return '';
+  }
+}
+
+async function avatarSet(nick, avatar) {
+  const key = String(nick || '').toLowerCase();
+  if (!key || !avatar) return false;
+  avatarCache.set(key, avatar);
+  if (!chatPool) return true;
+  await chatPool.query(
+    'INSERT INTO player_avatars(nick, avatar) VALUES($1, $2) ON CONFLICT (nick) DO UPDATE SET avatar = EXCLUDED.avatar',
+    [key, avatar]
+  );
+  return true;
+}
+
 async function ensureStatsTable() {
   if (!chatPool) return;
   try {
@@ -956,6 +994,28 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, id });
     }
 
+    if (route === '/v1/avatar' && req.method === 'GET') {
+      const nick = String(url.searchParams.get('nick') || '').trim();
+      if (!nick) return json(res, 400, { error: 'nick required' });
+      return json(res, 200, { nick, avatar: await avatarGet(nick) });
+    }
+
+    if (route === '/v1/avatar' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || body.nickname || '').trim();
+      const avatar = String(body.avatar || '');
+      if (!nick) return json(res, 400, { error: 'nick required' });
+      if (!avatar.startsWith('data:image/') || avatar.length > 400000) {
+        return json(res, 400, { error: 'bad avatar' });
+      }
+      try {
+        await avatarSet(nick, avatar);
+      } catch (error) {
+        return json(res, 500, { error: 'store failed' });
+      }
+      return json(res, 200, { ok: true });
+    }
+
     if (route.startsWith('/v1/profile') && req.method === 'GET') {
       const nick = String(url.searchParams.get('nick') || route.split('/')[3] || '').trim();
       if (!nick) return json(res, 400, { error: 'nick required' });
@@ -1005,7 +1065,15 @@ const server = http.createServer(async (req, res) => {
         if (now3 - seen <= 4000) typing.push(key);
         else chatTyping.delete(key);
       }
-      const withRoles = messages.map((message) => ({ ...message, role: roles.get(message.name) || 'User' }));
+      const avatarMap = new Map();
+      for (const message of messages) {
+        if (!avatarMap.has(message.name)) avatarMap.set(message.name, await avatarGet(message.name));
+      }
+      const withRoles = messages.map((message) => ({
+        ...message,
+        role: roles.get(message.name) || 'User',
+        avatar: avatarMap.get(message.name) || '',
+      }));
       return json(res, 200, { messages: withRoles, typing });
     }
 
@@ -1186,6 +1254,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+ensureAvatarTable().catch(() => {});
 ensureStatsTable().catch(() => {});
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log('ShadeVisuals site + API: http://127.0.0.1:' + PORT);
