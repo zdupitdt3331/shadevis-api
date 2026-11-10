@@ -875,6 +875,31 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { token, profile: publicProfile(account) });
     }
 
+    if (route === '/api/account/reenroll' && req.method === 'POST') {
+      const body = await readBody(req);
+      const nick = String(body.nick || '').trim();
+      const password = String(body.password || '');
+      if (!nick || password.length < 6) return json(res, 400, { error: 'Нужны ник и пароль (6+)' });
+      let account = await store.findAccount(nick);
+      if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
+      const locked = account.salt === 'reset' && account.hash === 'reset';
+      if (!locked && account.hwid) {
+        return json(res, 409, { error: 'Аккаунт не сброшен — просто войди с паролем' });
+      }
+      const { salt, hash } = hashPassword(password);
+      account = await store.setPassword(account.nick, salt, hash);
+      const newHwid = normalizeHwid(body.hwid);
+      if (newHwid) {
+        const owner = await store.hwidOwner(newHwid);
+        if (owner && owner.toLowerCase() !== account.nick.toLowerCase()) {
+          return json(res, 409, { error: 'Этот ПК уже привязан к другому аккаунту' });
+        }
+        account = await store.setHwid(account.nick, newHwid);
+      }
+      const token = await issueToken(account.nick);
+      return json(res, 200, { token, profile: publicProfile(account), reenrolled: true });
+    }
+
     if (route === '/api/account/recover' && req.method === 'POST') {
       const body = await readBody(req);
       const nick = String(body.nick || '').trim();
@@ -1002,9 +1027,8 @@ const server = http.createServer(async (req, res) => {
       const nick = String(body.nick || '').trim();
       const cleared = await store.clearHwid(nick);
       if (!cleared) return json(res, 404, { error: 'Аккаунт не найден' });
-      // помечаем аккаунт как сброшенный: войти нельзя, нужно зарегистрироваться заново
-      const locked = await store.setPassword(cleared.nick, 'reset', 'reset');
-      return json(res, 200, { profile: publicProfile(locked || cleared), reenroll: true });
+      // пароль не трогаем: игрок просто войдёт с нового ПК, HWID привяжется заново
+      return json(res, 200, { profile: publicProfile(cleared), reenroll: false, hwidReset: true });
     }
 
     if (route === '/api/admin/reset-password' && req.method === 'POST') {
