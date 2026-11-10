@@ -857,11 +857,12 @@ const server = http.createServer(async (req, res) => {
         }
         if (loginHwid !== boundHwid) {
           return json(res, 403, {
-            error: 'Аккаунт привязан к другому ПК. Если менял компьютер — попроси админа сбросить HWID.',
+            error: 'Аккаунт привязан к другому ПК. Смена ПК — через сброс HWID у администратора.',
             code: 'HWID_MISMATCH',
           });
         }
       } else if (loginHwid) {
+        // HWID не привязан (новый аккаунт или сброс в админке) — привязываем этот ПК
         const owner = await store.hwidOwner(loginHwid);
         if (owner && owner.toLowerCase() !== account.nick.toLowerCase()) {
           return json(res, 403, {
