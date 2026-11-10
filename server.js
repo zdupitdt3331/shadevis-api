@@ -846,11 +846,30 @@ const server = http.createServer(async (req, res) => {
         account = await store.createAccount(adoptLauncherAccount(launcher));
       }
       const loginHwid = normalizeHwid(body.hwid);
-      if (loginHwid && !account.hwid) {
-        const owner = await store.hwidOwner(loginHwid);
-        if (!owner || owner.toLowerCase() === account.nick.toLowerCase()) {
-          account = await store.setHwid(account.nick, loginHwid);
+      const boundHwid = normalizeHwid(account.hwid || '');
+      if (boundHwid) {
+        // жёсткая привязка: вход только с того ПК, к которому привязан аккаунт
+        if (!loginHwid) {
+          return json(res, 403, {
+            error: 'Вход только с привязанного ПК — HWID не передан',
+            code: 'HWID_MISMATCH',
+          });
         }
+        if (loginHwid !== boundHwid) {
+          return json(res, 403, {
+            error: 'Аккаунт привязан к другому ПК. Если менял компьютер — попроси админа сбросить HWID.',
+            code: 'HWID_MISMATCH',
+          });
+        }
+      } else if (loginHwid) {
+        const owner = await store.hwidOwner(loginHwid);
+        if (owner && owner.toLowerCase() !== account.nick.toLowerCase()) {
+          return json(res, 403, {
+            error: 'Этот ПК уже привязан к аккаунту «' + owner + '» — войди в него или сбрось HWID в админке',
+            code: 'HWID_TAKEN',
+          });
+        }
+        account = await store.setHwid(account.nick, loginHwid);
       }
       const token = await issueToken(account.nick);
       return json(res, 200, { token, profile: publicProfile(account) });
