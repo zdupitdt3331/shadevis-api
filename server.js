@@ -1014,7 +1014,7 @@ const server = http.createServer(async (req, res) => {
       if (!nick) return json(res, 400, { error: 'Укажи ник' });
       const role = body.role ? String(body.role) : null;
       const plan = body.plan ? String(body.plan) : null;
-      if (role && !['Admin', 'Media', 'User'].includes(role)) return json(res, 400, { error: 'Неизвестная роль' });
+      if (role && !['Admin', 'Tester', 'Beta', 'Media', 'User'].includes(role)) return json(res, 400, { error: 'Неизвестная роль' });
       if (plan && !['Classic', 'Classic+Plus', 'None'].includes(plan)) return json(res, 400, { error: 'Неизвестный план' });
       const updated = await store.updateAccount(nick, { role, plan });
       if (!updated) return json(res, 404, { error: 'Аккаунт не найден' });
