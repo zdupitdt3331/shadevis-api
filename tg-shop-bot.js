@@ -11,7 +11,7 @@ const CURRENCY = 'XTR';
 
 function token() {
   return process.env.TG_SHOP_BOT_TOKEN || process.env.SUPPORT_BOT_TOKEN
-    || '8956579827:AAHo-nHHU69HKA9UPlYa6htjVxk_bo1K-6c';
+    || '9136047120:AAEZylqHhcVDAoUIZIzSgZtRuPc9p4F7zuk';
 }
 
 function webhookSecret() {
