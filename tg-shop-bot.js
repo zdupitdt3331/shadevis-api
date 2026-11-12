@@ -45,7 +45,8 @@ async function tg(method, payload) {
 function cardText() {
   return '<b>💎 ShadeVisuals — доступ</b>\n\n'
     + 'Платишь <b>Telegram Stars</b> — получаешь ключ и активируешь его в лоунчере.\n'
-    + 'Регистрация заранее не нужна: ключ можно активировать, когда зайдёшь в клиент.\n\n'
+    + 'Регистрация заранее не нужна: ключ можно активировать, когда зайдёшь в клиент.\n'
+    + 'Лоудер можно скачать бесплатно — кнопка ниже.\n\n'
     + '🌸 <i>Выбери тариф ниже</i>';
 }
 
@@ -55,6 +56,7 @@ function menuKeyboard() {
       [{ text: 'Визуалы — ' + TIERS.basic.stars + ' ⭐', callback_data: 'buy:basic' }],
       [{ text: 'Роль Beta — ' + TIERS.beta.stars + ' ⭐', callback_data: 'buy:beta' }],
       [{ text: 'Сброс HWID — ' + TIERS.hwid.stars + ' ⭐', callback_data: 'buy:hwid' }],
+      [{ text: '⬇️ Скачать лоудер бесплатно', callback_data: 'download' }],
       [{ text: 'Мои покупки', callback_data: 'status' }],
     ],
   };
@@ -175,6 +177,7 @@ async function handleCallback(query, deps) {
   const chatId = query.message && query.message.chat ? query.message.chat.id : query.from.id;
   await tg('answerCallbackQuery', { callback_query_id: query.id });
   if (data === 'status') return sendKeys(chatId, query.from && query.from.id, deps);
+  if (data === 'download') return deliverSetup(chatId, deps);
   if (data.startsWith('hwidreset:')) {
     const nick = data.slice('hwidreset:'.length);
     const fromId = String(query.from && query.from.id || '');
