@@ -50,18 +50,41 @@ function writeMod(version, url) {
   fs.writeFileSync(MOD_FILE, JSON.stringify({ version, url }, null, 2));
 }
 
+async function readLauncherRelease() {
+  try {
+    if (store.getState) {
+      const raw = await store.getState('launcher_release');
+      if (raw) {
+        const data = JSON.parse(raw);
+        if (data && data.version) return data;
+      }
+    }
+  } catch { /* fallback to file */ }
+  return readUpdate();
+}
+
 function readUpdate() {
   try {
     const raw = JSON.parse(fs.readFileSync(UPDATE_FILE, 'utf8'));
-    return { version: String(raw.version || ''), url: String(raw.url || '') };
+    return {
+      version: String(raw.version || ''),
+      url: String(raw.url || ''),
+      releasedAt: Number(raw.releasedAt || 0),
+      delays: raw.delays && typeof raw.delays === 'object' ? raw.delays : {},
+    };
   } catch {
-    return { version: '', url: '' };
+    return { version: '', url: '', releasedAt: 0, delays: {} };
   }
 }
 
 function writeUpdate(version, url) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(UPDATE_FILE, JSON.stringify({ version, url }, null, 2));
+  fs.writeFileSync(UPDATE_FILE, JSON.stringify({
+    version,
+    url,
+    releasedAt: Date.now(),
+    delays: { beta: 0, pro: 24, default: 72 },
+  }, null, 2));
 }
 
 async function telegramSend(chatId, text) {
@@ -1639,6 +1662,33 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (route === '/api/admin/release' && req.method === 'POST') {
+      const admin = await requireAdmin(req);
+      if (!admin) return json(res, 403, { error: 'Нужна роль Admin' });
+      try {
+        const body = await readBody(req);
+        const version = String(body.version || '').trim().slice(0, 32);
+        const url = String(body.url || '').trim().slice(0, 500);
+        if (!version || !url) return json(res, 400, { error: 'version и url обязательны' });
+        const delays = body.delays && typeof body.delays === 'object' ? body.delays : {};
+        const record = {
+          version,
+          url,
+          releasedAt: Number(body.releasedAt || 0) || Date.now(),
+          delays: {
+            beta: Number(delays.beta != null ? delays.beta : 0),
+            pro: Number(delays.pro != null ? delays.pro : 24),
+            default: Number(delays.default != null ? delays.default : 72),
+          },
+        };
+        await store.setState('launcher_release', JSON.stringify(record));
+        return json(res, 200, { ok: true, release: record });
+      } catch (error) {
+        console.error('[release] failed', error && error.message);
+        return json(res, 500, { error: 'release failed' });
+      }
+    }
+
     if (route === '/api/mod/publish' && req.method === 'POST') {
       const key = String(req.headers['x-chat-key'] || '');
       const expected = process.env.CHAT_ADMIN_KEY || '';
@@ -1676,11 +1726,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/v1/update') {
-      const stored = readUpdate();
+      const stored = await readLauncherRelease();
       const version = stored.version || process.env.LAUNCHER_VERSION || '1.0.0';
       const url = stored.url || process.env.LAUNCHER_URL
         || ('http://' + (req.headers.host || 'localhost') + '/update/ShadeVisualsLoader.zip');
-      return json(res, 200, { version, url });
+      const account = await authAccount(req).catch(() => null);
+      const role = String((account && account.role) || url.searchParams.get('role') || 'User').toLowerCase();
+      const plan = String((account && account.plan) || url.searchParams.get('plan') || 'Classic').toLowerCase();
+      let channel = 'default';
+      if (['beta', 'tester', 'admin', 'owner', 'media'].includes(role)) channel = 'beta';
+      else if (plan.includes('plus')) channel = 'pro';
+      const delays = stored.delays || {};
+      const delayHours = Number(delays[channel] != null ? delays[channel] : (channel === 'beta' ? 0 : channel === 'pro' ? 24 : 72));
+      const releasedAt = Number(stored.releasedAt || 0) || (fs.existsSync(UPDATE_FILE) ? fs.statSync(UPDATE_FILE).mtimeMs : 0);
+      const availableAt = releasedAt + (Number.isFinite(delayHours) ? delayHours : 0) * 3600 * 1000;
+      if (releasedAt && Date.now() < availableAt) {
+        return json(res, 200, { version: null, url: null, available: false, channel, availableAt });
+      }
+      return json(res, 200, { version, url, available: true, channel });
     }
     // ---------- /updater ----------
 
