@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const store = require('./store');
+const tgShopBot = require('./tg-shop-bot');
 
 const PORT = Number(process.env.PORT || 8090);
 const SITE_DIR = process.env.SITE_DIR
@@ -753,6 +754,22 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const route = url.pathname;
 
+  if (route === '/tg/webhook' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const result = await tgShopBot.handleUpdate(req, body, { store, DATA_DIR });
+      return json(res, result.status || 200, result.payload || { ok: true });
+    } catch (error) {
+      console.error('[tg-shop] webhook failed', error && error.message);
+      return json(res, 200, { ok: true });
+    }
+  }
+
+  if (route === '/tg/health' && req.method === 'GET') {
+    return json(res, 200, { ok: true, shop: true, price: tgShopBot.PRICE });
+  }
+
+
   if (req.method === 'OPTIONS') {
     cors(res);
     res.writeHead(204);
@@ -1270,6 +1287,56 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, out);
     }
     // ---------- /cosmetics ----------
+
+    // ---------- telegram shop (Stars) ----------
+    if (route === '/v1/entitlement' && req.method === 'GET') {
+      const nick = String(url.searchParams.get('name') || '').trim().toLowerCase();
+      if (!nick) return json(res, 400, { error: 'bad name' });
+      const account = await store.findAccount(nick);
+      if (!account) return json(res, 200, { exists: false, plan: null, plus: false });
+      const plan = String(account.plan || 'Classic');
+      return json(res, 200, { exists: true, nick: account.nick, plan, plus: plan.toLowerCase().includes('plus') });
+    }
+
+    if (route === '/v1/tg/purchase' && req.method === 'POST') {
+      const shopSecret = process.env.TG_SHOP_SECRET || '';
+      if (!shopSecret) return json(res, 503, { error: 'shop disabled' });
+      const body = await readBody(req);
+      const nick = String(body.nick || '').trim().toLowerCase();
+      const chargeId = String(body.chargeId || '').trim();
+      const stars = Number(body.stars || 0);
+      const telegramId = String(body.telegramId || '');
+      const username = String(body.username || '');
+      if (!nick || !chargeId || !Number.isFinite(stars) || stars !== 200) {
+        return json(res, 400, { error: 'bad purchase' });
+      }
+      const expected = crypto.createHmac('sha256', shopSecret)
+        .update(nick + '|' + chargeId + '|' + stars + '|' + telegramId)
+        .digest('hex');
+      const provided = String(req.headers['x-shop-signature'] || '').trim().toLowerCase();
+      if (!provided || provided.length !== expected.length
+          || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided))) {
+        return json(res, 403, { error: 'bad signature' });
+      }
+      const purchasesFile = path.join(DATA_DIR, 'tg-purchases.json');
+      let purchases = [];
+      try { purchases = JSON.parse(fs.readFileSync(purchasesFile, 'utf8')) || []; } catch { purchases = []; }
+      if (!Array.isArray(purchases)) purchases = [];
+      const existingPurchase = purchases.find((item) => item && item.chargeId === chargeId);
+      const account = await store.findAccount(nick);
+      if (!account) return json(res, 404, { error: 'account not found' });
+      if (existingPurchase) {
+        return json(res, 200, { ok: true, already: true, nick: account.nick, plan: account.plan || 'Classic+Plus' });
+      }
+      const updated = await store.updateAccount(account.nick, { plan: 'Classic+Plus' }) || account;
+      purchases.push({ nick: account.nick, chargeId, stars, telegramId, username, at: Date.now() });
+      try {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+      } catch { }
+      console.log('[shop] granted visuals to', account.nick, 'charge', chargeId);
+      return json(res, 200, { ok: true, nick: account.nick, plan: updated.plan || 'Classic+Plus' });
+    }
 
     // ---------- party ----------
     // приглашать и принимать пати могут только игроки с ShadeVisuals (presence, TTL 30с)
