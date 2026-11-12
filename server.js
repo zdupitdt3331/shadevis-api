@@ -1338,6 +1338,71 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, nick: account.nick, plan: updated.plan || 'Classic+Plus' });
     }
 
+    if (route === '/v1/keys/health' && req.method === 'GET') {
+      const backend = store.backend();
+      return json(res, 200, { ok: backend !== 'json', backend });
+    }
+
+    // ---------- license keys (online shop) ----------
+    if (route === '/v1/keys/issue' && req.method === 'POST') {
+      try {
+        const shopSecret = process.env.TG_SHOP_SECRET || 'shade-shop-secret-2026';
+        const body = await readBody(req);
+        const tier = String(body.tier || 'basic').toLowerCase();
+        const telegramId = String(body.telegramId || '');
+        if (!telegramId) return json(res, 400, { error: 'bad telegram id' });
+        const expected = crypto.createHmac('sha256', shopSecret)
+          .update(tier + '|' + telegramId).digest('hex');
+        const provided = String(req.headers['x-shop-signature'] || '').trim().toLowerCase();
+        if (!provided || provided.length !== expected.length
+            || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided))) {
+          return json(res, 403, { error: 'bad signature' });
+        }
+        const role = tier === 'beta' ? 'Beta' : null;
+        let key = '';
+        for (let attempt = 0; attempt < 5 && !key; attempt += 1) {
+          const raw = crypto.randomBytes(12);
+          const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+          let bodyKey = '';
+          for (let i = 0; i < 12; i += 1) bodyKey += alphabet[raw[i] % alphabet.length];
+          const candidate = 'SHADE-' + bodyKey.slice(0, 4) + '-' + bodyKey.slice(4, 8) + '-' + bodyKey.slice(8, 12);
+          if (!(await store.findKey(candidate))) key = candidate;
+        }
+        if (!key) return json(res, 500, { error: 'key generation failed' });
+        await store.createKey({ key, tier, role, telegramId });
+        return json(res, 200, { ok: true, key, tier, role });
+      } catch (error) {
+        if (String(error && error.message) === 'keys_require_database') {
+          return json(res, 503, { error: 'Ключи доступны только в онлайн-режиме: на сервере нет базы данных.' });
+        }
+        console.error('[keys] issue failed', error && error.message);
+        return json(res, 500, { error: 'Не удалось выдать ключ. Напиши в поддержку.' });
+      }
+    }
+
+    if (route === '/v1/keys/redeem' && req.method === 'POST') {
+      try {
+        const account = await authAccount(req);
+        if (!account) return json(res, 401, { error: 'Войди в лаунчер, чтобы активировать ключ' });
+        const body = await readBody(req);
+        const key = String(body.key || '').trim().toUpperCase();
+        if (!key) return json(res, 400, { error: 'Введи ключ' });
+        const found = await store.findKey(key);
+        if (!found) return json(res, 404, { error: 'Ключ не найден' });
+        if (found.usedBy) return json(res, 409, { error: 'Ключ уже активирован' });
+        const consumed = await store.consumeKey(key, account.nick);
+        if (!consumed) return json(res, 409, { error: 'Ключ уже активирован' });
+        const updated = await store.updateAccount(account.nick, { plan: 'Classic+Plus', role: consumed.role || undefined }) || account;
+        return json(res, 200, { ok: true, key: consumed.key, tier: consumed.tier, plan: updated.plan, role: updated.role });
+      } catch (error) {
+        if (String(error && error.message) === 'keys_require_database') {
+          return json(res, 503, { error: 'Ключи доступны только в онлайн-режиме: на сервере нет базы данных.' });
+        }
+        console.error('[keys] redeem failed', error && error.message);
+        return json(res, 500, { error: 'Не удалось активировать ключ.' });
+      }
+    }
+
     // ---------- party ----------
     // приглашать и принимать пати могут только игроки с ShadeVisuals (presence, TTL 30с)
     const modUserFresh = (name) => {
