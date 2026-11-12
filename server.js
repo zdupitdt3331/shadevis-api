@@ -1291,8 +1291,15 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const name = String(body.name || '').trim().toLowerCase();
       if (!name || name.length > 32) return json(res, 400, { error: 'bad name' });
-      if (body.hidden) presence.delete(name);
-      else presence.set(name, Date.now());
+      const minecraft = String(body.minecraft || '').trim().toLowerCase();
+      if (body.hidden) {
+        presence.delete(name);
+        if (minecraft) presence.delete(minecraft);
+      } else {
+        const nowSeen = Date.now();
+        presence.set(name, nowSeen);
+        if (minecraft && minecraft.length <= 32) presence.set(minecraft, nowSeen);
+      }
       return json(res, 200, { ok: true, ttl: 90 });
     }
 
