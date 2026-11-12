@@ -855,6 +855,53 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (route === '/api/loader/upload' && req.method === 'POST') {
+    const key = String(req.headers['x-chat-key'] || '');
+    const expected = process.env.CHAT_ADMIN_KEY || '';
+    if (!expected || key !== expected) return json(res, 403, { error: 'forbidden' });
+    const file = path.join(DATA_DIR, 'loader-setup.exe');
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const output = fs.createWriteStream(file);
+      req.pipe(output);
+      output.on('finish', () => {
+        try {
+          const size = fs.statSync(file).size;
+          console.log('[loader] uploaded', size);
+          json(res, 200, { ok: true, size });
+        } catch (error) {
+          json(res, 500, { error: String(error.message || error) });
+        }
+      });
+      output.on('error', (error) => {
+        try { json(res, 500, { error: String(error.message || error) }); } catch { /* ignore */ }
+      });
+    } catch (error) {
+      return json(res, 500, { error: String(error.message || error) });
+    }
+    return;
+  }
+
+  if (route === '/v1/loader/download' && req.method === 'GET') {
+    const file = path.join(DATA_DIR, 'loader-setup.exe');
+    if (!fs.existsSync(file)) return json(res, 404, { error: 'loader not uploaded yet' });
+    const stat = fs.statSync(file);
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Content-Disposition': 'attachment; filename=\"ShadeVisuals-Setup.exe\"',
+    });
+    fs.createReadStream(file).pipe(res);
+    return;
+  }
+
+  if (route === '/v1/loader/info' && req.method === 'GET') {
+    const file = path.join(DATA_DIR, 'loader-setup.exe');
+    if (!fs.existsSync(file)) return json(res, 200, { uploaded: false });
+    const stat = fs.statSync(file);
+    return json(res, 200, { uploaded: true, size: stat.size, mtime: stat.mtimeMs });
+  }
+
   if (route === '/tg/health' && req.method === 'GET') {
     return json(res, 200, { ok: true, shop: true, price: tgShopBot.PRICE });
   }
