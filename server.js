@@ -862,6 +862,11 @@ const server = http.createServer(async (req, res) => {
         if (!launcherPasswordOk(launcher, body.password)) return json(res, 401, { error: 'Неверный пароль' });
         account = await store.createAccount(adoptLauncherAccount(launcher));
       }
+      const ownerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
+      if (String(account.nick || '').toLowerCase() === ownerNick
+          && String(account.role || '').toLowerCase() !== 'admin') {
+        account = (await store.updateAccount(account.nick, { role: 'Admin' })) || account;
+      }
       const loginHwid = normalizeHwid(body.hwid);
       const boundHwid = normalizeHwid(account.hwid || '');
       if (boundHwid) {
@@ -1392,7 +1397,11 @@ const server = http.createServer(async (req, res) => {
         if (found.usedBy) return json(res, 409, { error: 'Ключ уже активирован' });
         const consumed = await store.consumeKey(key, account.nick);
         if (!consumed) return json(res, 409, { error: 'Ключ уже активирован' });
-        const updated = await store.updateAccount(account.nick, { plan: 'Classic+Plus', role: consumed.role || undefined }) || account;
+        const ROLE_RANK = { user: 0, media: 1, beta: 1, tester: 2, admin: 3, owner: 4 };
+        const currentRank = ROLE_RANK[String(account.role || 'User').toLowerCase()] || 0;
+        const grantRank = consumed.role ? (ROLE_RANK[String(consumed.role).toLowerCase()] || 0) : -1;
+        const nextRole = grantRank > currentRank ? consumed.role : account.role;
+        const updated = await store.updateAccount(account.nick, { plan: 'Classic+Plus', role: nextRole }) || account;
         return json(res, 200, { ok: true, key: consumed.key, tier: consumed.tier, plan: updated.plan, role: updated.role });
       } catch (error) {
         if (String(error && error.message) === 'keys_require_database') {
