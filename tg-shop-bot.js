@@ -245,7 +245,7 @@ async function startHwidInvoice(chatId, from, nick) {
   const result = await tg('sendInvoice', {
     chat_id: chatId,
     title: 'ShadeVisuals — сброс HWID',
-    description: 'Сброс привязки ПК для аккаунта ' + nick + '. После оплаты администратор сбросит HWID.',
+    description: 'Сброс привязки ПК для аккаунта ' + nick + '. После оплаты HWID сбрасывается автоматически.',
     payload,
     currency: CURRENCY,
     prices: [{ label: 'Сброс HWID', amount: TIERS.hwid.stars }],
@@ -292,7 +292,7 @@ async function handlePaid(message, deps) {
   }
   const purchases = readJson(purchasesFile(deps), []);
   if (Array.isArray(purchases) && purchases.some((item) => item && item.chargeId === chargeId)) {
-    await tg('sendMessage', { chat_id: chatId, text: 'Этот платёж уже обработан ✅ Проверь ключ командой /status.' });
+    await tg('sendMessage', { chat_id: chatId, text: 'Этот платёж уже обработан ✅' });
     return;
   }
   const verified = await verifyStarTransaction(chargeId, uid, tier.stars);
@@ -314,26 +314,39 @@ async function handlePaid(message, deps) {
       at: Date.now(),
     });
     writeJson(hwidFile(deps), requests);
+
+    let cleared = null;
+    try {
+      cleared = await deps.store.clearHwid(nick);
+    } catch (error) {
+      console.error('[tg-shop] hwid auto reset failed', error && error.message);
+    }
+    const auto = Boolean(cleared);
+
     let notified = false;
     if (ADMIN_ID) {
       const adminMessage = await tg('sendMessage', {
         chat_id: ADMIN_ID,
         parse_mode: 'HTML',
-        text: '<b>🛠 Заявка на сброс HWID</b>\n\n'
+        text: (auto ? '<b>✅ HWID сброшен автоматически</b>' : '<b>🛠 Заявка на сброс HWID</b>') + '\n\n'
           + 'Ник: <b>' + escapeHtml(nick) + '</b>\n'
           + 'Telegram: ' + (message.from && message.from.username ? '@' + escapeHtml(message.from.username) : 'id ' + uid) + '\n'
           + 'Оплата: <b>' + tier.stars + ' ⭐</b>\n'
           + 'Чек: <code>' + chargeId + '</code>\n\n'
-          + 'Нажми кнопку ниже или сбрось HWID в админке.',
-        reply_markup: { inline_keyboard: [[{ text: 'Сбросить HWID', callback_data: 'hwidreset:' + nick }]] },
+          + (auto
+            ? 'Если нужно сбросить ещё раз — кнопка ниже.'
+            : 'Автосброс не сработал: сбрось вручную кнопкой ниже или в админке.'),
+        reply_markup: { inline_keyboard: [[{ text: auto ? 'Сбросить ещё раз' : 'Сбросить HWID', callback_data: 'hwidreset:' + nick }]] },
       });
       notified = Boolean(adminMessage && adminMessage.ok);
     }
     await tg('sendMessage', {
       chat_id: chatId,
-      text: notified
-        ? '✅ Оплата получена. Заявка отправлена администратору — HWID сбросят, после этого сможешь войти с нового ПК.'
-        : '✅ Оплата получена, но администратор недоступен. Напиши в поддержку и приложи чек: ' + chargeId,
+      text: auto
+        ? '✅ Оплата получена, HWID сброшен. Зайди в лаунчер заново — привяжется новый ПК.'
+        : (notified
+          ? '✅ Оплата получена. Заявка отправлена администратору — HWID сбросят вручную.'
+          : '✅ Оплата получена, но сбросить не удалось. Напиши в поддержку и приложи чек: ' + chargeId),
     });
     return;
   }
