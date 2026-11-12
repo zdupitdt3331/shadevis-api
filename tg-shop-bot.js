@@ -478,7 +478,9 @@ async function deliverSetup(chatId, deps) {
   }
   await tg('sendMessage', {
     chat_id: chatId,
-    text: '✅ Доступ открыт. Установщик ещё не загружен на сервер — напиши в поддержку.',
+    parse_mode: 'HTML',
+    text: '<b>📦 Скачать ShadeVisuals Loader</b>\n\nНажми кнопку ниже — установщик скачается с сервера. После установки войди в аккаунт.',
+    reply_markup: { inline_keyboard: [[{ text: '⬇️ Скачать лоудер', url: SHOP_URL + '/v1/loader/download' }]] },
   });
 }
 
