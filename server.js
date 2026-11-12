@@ -1653,7 +1653,13 @@ const server = http.createServer(async (req, res) => {
         });
         await done;
         if (size < 1024) return json(res, 400, { error: 'empty body' });
-        fs.writeFileSync(MOD_JAR, Buffer.concat(chunks));
+        const modBuffer = Buffer.concat(chunks);
+        fs.writeFileSync(MOD_JAR, modBuffer);
+        try {
+          if (store.saveModFile) await store.saveModFile(version, modBuffer);
+        } catch (error) {
+          console.warn('[mod] db save failed:', error && error.message);
+        }
         const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
         await persistMod(version, 'https://' + host + '/v1/mod/download');
         return json(res, 200, { ok: true, version, size });
@@ -1712,16 +1718,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/v1/mod/download') {
+      let data = null;
       try {
-        const data = fs.readFileSync(MOD_JAR);
-        res.writeHead(200, {
-          'Content-Type': 'application/java-archive',
-          'Content-Length': data.length,
-        });
-        res.end(data);
+        data = fs.readFileSync(MOD_JAR);
       } catch {
-        json(res, 404, { error: 'mod not uploaded yet' });
+        data = null;
       }
+      if (!data) {
+        try {
+          const stored = readMod();
+          data = await store.getModFile(stored.version || '');
+        } catch (error) {
+          console.warn('[mod] db read failed:', error && error.message);
+        }
+      }
+      if (!data) {
+        json(res, 404, { error: 'mod not uploaded yet' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/java-archive',
+        'Content-Length': data.length,
+      });
+      res.end(data);
       return;
     }
 
