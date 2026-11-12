@@ -13,7 +13,7 @@ const SHOP_URL = 'https://shadevis-api.onrender.com';
 function shopSecret() { return process.env.TG_SHOP_SECRET || ''; }
 
 const TIERS = {
-  basic: { id: 'basic', stars: 200, title: 'Визуалы', role: null },
+  basic: { id: 'basic', stars: 200, title: 'Pro', role: null },
   beta: { id: 'beta', stars: 300, title: 'Beta', role: 'Beta' },
   hwid: { id: 'hwid', stars: 10, title: 'Сброс HWID', role: null },
 };
@@ -44,7 +44,7 @@ async function tg(method, payload) {
 
 function cardText() {
   return '<b>💎 ShadeVisuals — доступ</b>\n\n'
-    + 'Платишь <b>Telegram Stars</b> — получаешь ключ и активируешь его в лоунчере.\n'
+    + 'Платишь <b>Telegram Stars</b> — получаешь подписку и активируешь ключ в лоунчере.\n'
     + 'Регистрация заранее не нужна: ключ можно активировать, когда зайдёшь в клиент.\n'
     + 'Лоудер можно скачать бесплатно — кнопка ниже.\n\n'
     + '🌸 <i>Выбери тариф ниже</i>';
@@ -53,7 +53,7 @@ function cardText() {
 function menuKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: 'Визуалы — ' + TIERS.basic.stars + ' ⭐', callback_data: 'buy:basic' }],
+      [{ text: 'Подписка Pro — ' + TIERS.basic.stars + ' ⭐', callback_data: 'buy:basic' }],
       [{ text: 'Роль Beta — ' + TIERS.beta.stars + ' ⭐', callback_data: 'buy:beta' }],
       [{ text: 'Сброс HWID — ' + TIERS.hwid.stars + ' ⭐', callback_data: 'buy:hwid' }],
       [{ text: '⬇️ Скачать лоудер бесплатно', callback_data: 'download' }],
@@ -232,8 +232,8 @@ async function startPurchase(chatId, from, tier) {
     chat_id: chatId,
     title: 'ShadeVisuals — ' + tier.title,
     description: tier.id === 'beta'
-      ? 'Роль Beta в ShadeVisuals + доступ к визуалам. После оплаты придёт ключ активации.'
-      : 'Доступ к визуалам ShadeVisuals. После оплаты придёт ключ активации.',
+      ? 'Подписка Beta: роль Beta + доступ к визуалам. После оплаты придёт ключ активации.'
+      : 'Подписка Pro: все визуалы, косметика и эффекты. После оплаты придёт ключ активации.',
     payload,
     currency: CURRENCY,
     prices: [{ label: 'ShadeVisuals — ' + tier.title, amount: tier.stars }],
