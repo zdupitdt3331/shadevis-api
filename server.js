@@ -4,6 +4,23 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+// Render Secret Files: /etc/secrets/<name> may contain KEY=VALUE lines.
+try {
+  const secretsDir = '/etc/secrets';
+  if (fs.existsSync(secretsDir)) {
+    for (const name of fs.readdirSync(secretsDir)) {
+      try {
+        const text = fs.readFileSync(path.join(secretsDir, name), 'utf8');
+        for (const raw of text.split(/\r?\n/)) {
+          const line = raw.trim();
+          const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
+          if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+        }
+      } catch { /* ignore */ }
+    }
+  }
+} catch { /* ignore */ }
+
 const store = require('./store');
 const tgShopBot = require('./tg-shop-bot');
 
