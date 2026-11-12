@@ -1114,7 +1114,7 @@ const server = http.createServer(async (req, res) => {
       const now = Date.now();
       const out = {};
       for (const [name, seen] of presence) {
-        if (now - seen <= 30000) out[name] = '';
+        if (now - seen <= 45000) out[name] = '';
         else presence.delete(name);
       }
       return json(res, 200, out);
@@ -1272,6 +1272,12 @@ const server = http.createServer(async (req, res) => {
     // ---------- /cosmetics ----------
 
     // ---------- party ----------
+    // приглашать и принимать пати могут только игроки с ShadeVisuals (presence, TTL 30с)
+    const modUserFresh = (name) => {
+      const seen = presence.get(String(name || '').toLowerCase());
+      return Boolean(seen) && Date.now() - seen <= 45000;
+    };
+
     function partyOf(nick) {
       const key = String(nick || '').toLowerCase();
       for (const [leader, party] of parties) {
@@ -1285,6 +1291,7 @@ const server = http.createServer(async (req, res) => {
       const from = String(body.from || '').toLowerCase().slice(0, 24);
       const to = String(body.to || '').toLowerCase().slice(0, 24);
       if (!from || !to || from === to) return json(res, 400, { error: 'bad invite' });
+      if (!modUserFresh(to)) return json(res, 403, { error: 'target_no_mod' });
       const existing = partyOf(from);
       const leader = existing ? existing.leader : from;
       const party = existing ? existing.party : { members: new Set(), invites: new Map(), markers: new Map() };
@@ -1323,6 +1330,8 @@ const server = http.createServer(async (req, res) => {
       const nick = String(body.nick || '').toLowerCase().slice(0, 24);
       const from = String(body.from || '').toLowerCase().slice(0, 24);
       const accept = Boolean(body.accept);
+      if (!modUserFresh(from)) return json(res, 403, { error: 'inviter_no_mod' });
+      if (!modUserFresh(to)) return json(res, 403, { error: 'target_no_mod' });
       if (!nick || !from) return json(res, 400, { error: 'bad answer' });
       const existing = partyOf(from);
       if (!existing || !existing.party.invites.has(nick)) return json(res, 404, { error: 'invite not found' });
@@ -1446,6 +1455,7 @@ const server = http.createServer(async (req, res) => {
       const out = [];
       for (const [to, invite] of partyInvites) {
         if (Date.now() - invite.at > 120000) { partyInvites.delete(to); continue; }
+        if (!modUserFresh(invite.from)) { partyInvites.delete(to); continue; }
         if (to === name) out.push(invite.from);
       }
       return json(res, 200, { invites: out });
