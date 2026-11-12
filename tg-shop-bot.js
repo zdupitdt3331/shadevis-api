@@ -21,7 +21,7 @@ const TIERS = {
 const pendingHwid = new Map();
 
 const CURRENCY = 'XTR';
-const LOADER_URL = 'https://workupload.com/file/TAQCB2qgk7c';
+const LOADER_URL = 'https://workupload.com/file/b6AxsJZp2Q5';
 function adminId() { return String(process.env.TG_SHOP_ADMIN_ID || ''); }
 
 function token() {
@@ -459,6 +459,26 @@ async function handleSetupDocument(message, deps) {
 }
 
 async function deliverSetup(chatId, deps) {
+  let info = null;
+  try {
+    const stored = deps.store && deps.store.getState ? await deps.store.getState('tg_shop_setup') : null;
+    if (stored) info = JSON.parse(stored);
+  } catch (error) {
+    console.error('[tg-shop] setup state read failed', error && error.message);
+  }
+  if (!info) info = readJson(path.join(dataDir(deps), 'tg-shop-setup.json'), null);
+
+  if (info && info.fileId) {
+    const result = await tg('sendDocument', {
+      chat_id: chatId,
+      document: info.fileId,
+      parse_mode: 'HTML',
+      caption: '<b>📦 ShadeVisuals Setup</b>\n\nЗапусти установщик и войди в аккаунт.',
+    });
+    if (result.ok) return;
+    console.error('[tg-shop] sendDocument failed', JSON.stringify(result).slice(0, 200));
+  }
+
   await tg('sendMessage', {
     chat_id: chatId,
     parse_mode: 'HTML',
