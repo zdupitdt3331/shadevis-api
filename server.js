@@ -806,7 +806,12 @@ const server = http.createServer(async (req, res) => {
     try {
       const ownerKey = process.env.OWNER_KEY || '';
       const provided = String(req.headers['x-owner-key'] || '');
-      if (!ownerKey || provided !== ownerKey) return json(res, 403, { error: 'forbidden' });
+      let authorized = Boolean(ownerKey) && provided === ownerKey;
+      if (!authorized) {
+        const adminAccount = await authAccount(req);
+        authorized = Boolean(adminAccount && isAdminAccount(adminAccount));
+      }
+      if (!authorized) return json(res, 403, { error: 'forbidden' });
       if (rateLimited(req, 'setup', 20)) return json(res, 429, { error: 'too many attempts' });
       if (!store.getState || !store.setState) return json(res, 503, { error: 'db required' });
       const body = await readBody(req);
