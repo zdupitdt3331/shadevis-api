@@ -94,6 +94,20 @@ CREATE TABLE IF NOT EXISTS cloud_messages (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_id ON cloud_messages (id);
+CREATE TABLE IF NOT EXISTS bot_state (
+  name VARCHAR(64) PRIMARY KEY,
+  state_value TEXT NOT NULL DEFAULT '',
+  updated_at BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS license_keys (
+  key VARCHAR(40) PRIMARY KEY,
+  tier VARCHAR(24) NOT NULL DEFAULT 'basic',
+  role VARCHAR(16) NULL,
+  telegram_id VARCHAR(32) NULL,
+  created_at BIGINT NOT NULL,
+  used_by VARCHAR(32) NULL,
+  used_at BIGINT NULL
+);
 `;
 
 if (pgPool) {
@@ -372,6 +386,145 @@ async function setPassword(nick, salt, hash) {
 
 
 
+
+// ---------- license keys (online DB only) ----------
+function normalizeKey(row) {
+  return {
+    key: row.key,
+    tier: row.tier || 'basic',
+    role: row.role || null,
+    telegramId: row.telegramId || row.telegram_id || null,
+    createdAt: Number(row.createdAt || row.created_at || 0),
+    usedBy: row.usedBy || row.used_by || null,
+    usedAt: Number(row.usedAt || row.used_at || 0) || null,
+  };
+}
+
+function requireKeysDb() {
+  if (!pgPool && !mysqlPool) throw new Error('keys_require_database');
+}
+
+let mysqlKeysReady = null;
+function ensureMysqlKeys() {
+  if (!mysqlKeysReady) {
+    const tick = String.fromCharCode(96);
+    const keyColumn = tick + 'key' + tick;
+    const sql = 'CREATE TABLE IF NOT EXISTS license_keys ('
+      + keyColumn + ' VARCHAR(40) PRIMARY KEY, tier VARCHAR(24) NOT NULL DEFAULT \'basic\', '
+      + 'role VARCHAR(16) NULL, telegram_id VARCHAR(32) NULL, created_at BIGINT NOT NULL, '
+      + 'used_by VARCHAR(32) NULL, used_at BIGINT NULL)';
+    mysqlKeysReady = mysqlPool.query(sql).catch(() => null);
+  }
+  return mysqlKeysReady;
+}
+
+async function createKey(record) {
+  requireKeysDb();
+  const row = {
+    key: record.key,
+    tier: record.tier || 'basic',
+    role: record.role || null,
+    telegramId: record.telegramId || null,
+    createdAt: Date.now(),
+    usedBy: null,
+    usedAt: null,
+  };
+  if (pgPool) {
+    await pgPool.query(
+      'INSERT INTO license_keys (key, tier, role, telegram_id, created_at) VALUES ($1,$2,$3,$4,$5)',
+      [row.key, row.tier, row.role, row.telegramId, row.createdAt]
+    );
+    return row;
+  }
+  await ensureMysqlKeys();
+  const tick = String.fromCharCode(96);
+  await mysqlPool.query(
+    'INSERT INTO license_keys (' + tick + 'key' + tick + ', tier, role, telegram_id, created_at) VALUES (?,?,?,?,?)',
+    [row.key, row.tier, row.role, row.telegramId, row.createdAt]
+  );
+  return row;
+}
+
+async function findKey(key) {
+  requireKeysDb();
+  const normalized = String(key || '').trim().toUpperCase();
+  if (!normalized) return null;
+  if (pgPool) {
+    const { rows } = await pgPool.query(
+      'SELECT key, tier, role, telegram_id, created_at, used_by, used_at FROM license_keys WHERE key = $1 LIMIT 1',
+      [normalized]
+    );
+    return rows[0] ? normalizeKey(rows[0]) : null;
+  }
+  await ensureMysqlKeys();
+  const tick = String.fromCharCode(96);
+  const [rows] = await mysqlPool.query(
+    'SELECT ' + tick + 'key' + tick + ', tier, role, telegram_id, created_at, used_by, used_at FROM license_keys WHERE ' + tick + 'key' + tick + ' = ? LIMIT 1',
+    [normalized]
+  );
+  return rows[0] ? normalizeKey(rows[0]) : null;
+}
+
+async function consumeKey(key, nick) {
+  requireKeysDb();
+  const normalized = String(key || '').trim().toUpperCase();
+  const owner = String(nick || '').trim();
+  if (!normalized || !owner) return null;
+  if (pgPool) {
+    const { rows } = await pgPool.query(
+      'UPDATE license_keys SET used_by = $2, used_at = $3 WHERE key = $1 AND used_by IS NULL RETURNING key, tier, role, telegram_id, created_at, used_by, used_at',
+      [normalized, owner, Date.now()]
+    );
+    return rows[0] ? normalizeKey(rows[0]) : null;
+  }
+  await ensureMysqlKeys();
+  const tick = String.fromCharCode(96);
+  const [result] = await mysqlPool.query(
+    'UPDATE license_keys SET used_by = ?, used_at = ? WHERE ' + tick + 'key' + tick + ' = ? AND used_by IS NULL',
+    [owner, Date.now(), normalized]
+  );
+  if (!result || !result.affectedRows) return null;
+  return findKey(normalized);
+}
+
+
+async function getState(name) {
+  requireKeysDb();
+  if (pgPool) {
+    const { rows } = await pgPool.query('SELECT state_value FROM bot_state WHERE name = $1 LIMIT 1', [String(name)]);
+    return rows[0] ? rows[0].state_value : null;
+  }
+  await ensureBotStateMysql();
+  const [rows] = await mysqlPool.query('SELECT state_value FROM bot_state WHERE name = ? LIMIT 1', [String(name)]);
+  return rows[0] ? rows[0].state_value : null;
+}
+
+async function setState(name, value) {
+  requireKeysDb();
+  const text = String(value == null ? '' : value);
+  if (pgPool) {
+    await pgPool.query(
+      'INSERT INTO bot_state (name, state_value, updated_at) VALUES ($1,$2,$3) ON CONFLICT (name) DO UPDATE SET state_value = $2, updated_at = $3',
+      [String(name), text, Date.now()]
+    );
+    return true;
+  }
+  await ensureBotStateMysql();
+  await mysqlPool.query(
+    'INSERT INTO bot_state (name, state_value, updated_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE state_value = VALUES(state_value), updated_at = VALUES(updated_at)',
+    [String(name), text, Date.now()]
+  );
+  return true;
+}
+
+let mysqlStateReady = null;
+function ensureBotStateMysql() {
+  if (!mysqlStateReady) {
+    mysqlStateReady = mysqlPool.query('CREATE TABLE IF NOT EXISTS bot_state (name VARCHAR(64) PRIMARY KEY, state_value TEXT NOT NULL, updated_at BIGINT NOT NULL)').catch(() => null);
+  }
+  return mysqlStateReady;
+}
+
 module.exports = {
   backend: () => (pgPool ? 'postgres' : mysqlPool ? 'mysql' : 'json'),
   findAccount,
@@ -385,4 +538,9 @@ module.exports = {
   updateAccount,
   clearHwid,
   setPassword,
+  createKey,
+  findKey,
+  consumeKey,
+  getState,
+  setState,
 };
