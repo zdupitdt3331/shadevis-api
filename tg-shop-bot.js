@@ -21,7 +21,7 @@ const TIERS = {
 const pendingHwid = new Map();
 
 const CURRENCY = 'XTR';
-const LOADER_URL = 'https://workupload.com/file/b6AxsJZp2Q5';
+const LOADER_URL = 'https://workupload.com/file/sQt7863h6gp';
 function adminId() { return String(process.env.TG_SHOP_ADMIN_ID || ''); }
 
 function token() {
