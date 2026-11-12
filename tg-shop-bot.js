@@ -15,7 +15,10 @@ const SHOP_SECRET = process.env.TG_SHOP_SECRET || '';
 const TIERS = {
   basic: { id: 'basic', stars: 200, title: 'Визуалы', role: null },
   beta: { id: 'beta', stars: 300, title: 'Beta', role: 'Beta' },
+  hwid: { id: 'hwid', stars: 10, title: 'Сброс HWID', role: null },
 };
+
+const pendingHwid = new Map();
 
 const CURRENCY = 'XTR';
 const ADMIN_ID = String(process.env.TG_SHOP_ADMIN_ID || '');
@@ -51,6 +54,7 @@ function menuKeyboard() {
     inline_keyboard: [
       [{ text: 'Визуалы — ' + TIERS.basic.stars + ' ⭐', callback_data: 'buy:basic' }],
       [{ text: 'Роль Beta — ' + TIERS.beta.stars + ' ⭐', callback_data: 'buy:beta' }],
+      [{ text: 'Сброс HWID — ' + TIERS.hwid.stars + ' ⭐', callback_data: 'buy:hwid' }],
       [{ text: 'Мои покупки', callback_data: 'status' }],
     ],
   };
@@ -119,6 +123,10 @@ function purchasesFile(deps) {
   return path.join(dataDir(deps), 'tg-shop-purchases.json');
 }
 
+function hwidFile(deps) {
+  return path.join(dataDir(deps), 'tg-shop-hwid.json');
+}
+
 async function handleUpdate(req, update, deps) {
   const secret = req.headers['x-telegram-bot-api-secret-token']
     || new URL(req.url, 'http://localhost').searchParams.get('secret');
@@ -144,6 +152,21 @@ async function handleMessage(message, deps) {
   if (text === '/start' || text === '/help' || text === '/buy') return sendCard(chatId);
   if (text === '/status' || text === '/key') return sendKeys(chatId, message.from && message.from.id, deps);
   if (text === '/download') return deliverSetup(chatId, deps);
+  if (message.reply_to_message && message.reply_to_message.from
+      && message.reply_to_message.from.is_bot && pendingHwid.has(message.from.id)) {
+    pendingHwid.delete(message.from.id);
+    const nick = text.replace(/[^A-Za-z0-9_]/g, '').trim();
+    if (nick.length < 3 || nick.length > 16) {
+      await tg('sendMessage', { chat_id: chatId, text: 'Ник должен быть 3–16 символов (латиница, цифры, _).' });
+      return;
+    }
+    const account = await deps.store.findAccount(nick);
+    if (!account) {
+      await tg('sendMessage', { chat_id: chatId, text: 'Аккаунт «' + nick + '» не найден. Проверь ник.' });
+      return;
+    }
+    return startHwidInvoice(chatId, message.from, account.nick);
+  }
   await sendCard(chatId);
 }
 
@@ -152,8 +175,50 @@ async function handleCallback(query, deps) {
   const chatId = query.message && query.message.chat ? query.message.chat.id : query.from.id;
   await tg('answerCallbackQuery', { callback_query_id: query.id });
   if (data === 'status') return sendKeys(chatId, query.from && query.from.id, deps);
+  if (data.startsWith('hwidreset:')) {
+    const nick = data.slice('hwidreset:'.length);
+    const fromId = String(query.from && query.from.id || '');
+    if (!ADMIN_ID || fromId !== ADMIN_ID) {
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Нет прав', show_alert: true });
+      return;
+    }
+    const account = await deps.store.findAccount(nick);
+    if (!account) {
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Аккаунт не найден', show_alert: true });
+      return;
+    }
+    await deps.store.clearHwid(account.nick);
+    const requests = readJson(hwidFile(deps), []);
+    const request = Array.isArray(requests)
+      ? requests.find((item) => String(item.nick || '').toLowerCase() === String(account.nick).toLowerCase())
+      : null;
+    if (request && request.buyerId) {
+      await tg('sendMessage', {
+        chat_id: request.buyerId,
+        text: '✅ HWID сброшен для ' + account.nick + '. Зайди в лаунчер заново.',
+      });
+    }
+    if (query.message) {
+      await tg('editMessageText', {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        text: '✅ HWID сброшен: ' + account.nick,
+      });
+    }
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Готово' });
+    return;
+  }
   if (data.startsWith('buy:')) {
     const tier = TIERS[data.split(':')[1]] || TIERS.basic;
+    if (tier.id === 'hwid') {
+      pendingHwid.set(query.from.id, true);
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: 'Введи ник, для которого нужно сбросить HWID:',
+        reply_markup: { force_reply: true, selective: true },
+      });
+      return;
+    }
     return startPurchase(chatId, query.from, tier);
   }
 }
@@ -175,6 +240,21 @@ async function startPurchase(chatId, from, tier) {
   }
 }
 
+async function startHwidInvoice(chatId, from, nick) {
+  const payload = JSON.stringify({ tier: 'hwid', nick, uid: from.id, ts: Date.now() });
+  const result = await tg('sendInvoice', {
+    chat_id: chatId,
+    title: 'ShadeVisuals — сброс HWID',
+    description: 'Сброс привязки ПК для аккаунта ' + nick + '. После оплаты администратор сбросит HWID.',
+    payload,
+    currency: CURRENCY,
+    prices: [{ label: 'Сброс HWID', amount: TIERS.hwid.stars }],
+  });
+  if (!result.ok) {
+    await tg('sendMessage', { chat_id: chatId, text: 'Не удалось выставить счёт. Попробуй позже.' });
+  }
+}
+
 async function handlePreCheckout(query) {
   let payload = null;
   try {
@@ -185,7 +265,8 @@ async function handlePreCheckout(query) {
   const tier = payload && TIERS[payload.tier] ? TIERS[payload.tier] : null;
   const valid = Boolean(payload && tier)
     && query.currency === CURRENCY
-    && Number(query.total_amount) === tier.stars;
+    && Number(query.total_amount) === tier.stars
+    && (tier.id !== 'hwid' || Boolean(payload && payload.nick));
   await tg('answerPreCheckoutQuery', {
     pre_checkout_query_id: query.id,
     ok: valid,
@@ -219,6 +300,40 @@ async function handlePaid(message, deps) {
     await tg('sendMessage', {
       chat_id: chatId,
       text: 'Не удалось подтвердить платёж у Telegram. Напиши в поддержку, номер платежа: ' + chargeId,
+    });
+    return;
+  }
+  if (tier.id === 'hwid') {
+    const nick = String(payload && payload.nick || '');
+    const requests = readJson(hwidFile(deps), []);
+    requests.push({
+      nick,
+      buyerId: uid,
+      username: (message.from && message.from.username) || '',
+      chargeId,
+      at: Date.now(),
+    });
+    writeJson(hwidFile(deps), requests);
+    let notified = false;
+    if (ADMIN_ID) {
+      const adminMessage = await tg('sendMessage', {
+        chat_id: ADMIN_ID,
+        parse_mode: 'HTML',
+        text: '<b>🛠 Заявка на сброс HWID</b>\n\n'
+          + 'Ник: <b>' + escapeHtml(nick) + '</b>\n'
+          + 'Telegram: ' + (message.from && message.from.username ? '@' + escapeHtml(message.from.username) : 'id ' + uid) + '\n'
+          + 'Оплата: <b>' + tier.stars + ' ⭐</b>\n'
+          + 'Чек: <code>' + chargeId + '</code>\n\n'
+          + 'Нажми кнопку ниже или сбрось HWID в админке.',
+        reply_markup: { inline_keyboard: [[{ text: 'Сбросить HWID', callback_data: 'hwidreset:' + nick }]] },
+      });
+      notified = Boolean(adminMessage && adminMessage.ok);
+    }
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: notified
+        ? '✅ Оплата получена. Заявка отправлена администратору — HWID сбросят, после этого сможешь войти с нового ПК.'
+        : '✅ Оплата получена, но администратор недоступен. Напиши в поддержку и приложи чек: ' + chargeId,
     });
     return;
   }
