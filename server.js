@@ -553,6 +553,26 @@ function readBody(req) {
   });
 }
 
+
+// ---------- rate limiting (in-memory) ----------
+const rateBuckets = new Map();
+function rateLimited(req, scope, limit, windowMs) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const ip = forwarded || String((req.socket && req.socket.remoteAddress) || 'unknown');
+  const key = scope + '|' + ip;
+  const max = limit || 20;
+  const ttl = windowMs || 10 * 60 * 1000;
+  const now = Date.now();
+  const entry = rateBuckets.get(key) || { count: 0, reset: now + ttl };
+  if (now > entry.reset) {
+    entry.count = 0;
+    entry.reset = now + ttl;
+  }
+  entry.count += 1;
+  rateBuckets.set(key, entry);
+  return entry.count > max;
+}
+
 function hashPassword(password, salt) {
   const useSalt = salt || crypto.randomBytes(16).toString('hex');
   const hash = crypto.pbkdf2Sync(password, useSalt, 120000, 32, 'sha256').toString('hex');
@@ -574,7 +594,7 @@ function formatHwid(hwid) {
 
 // ---------- support chat ----------
 const SUPPORT_FILE = path.join(DATA_DIR, 'support.json');
-const SUPPORT_TOKEN = process.env.SUPPORT_BOT_TOKEN || '8956579827:AAHo-nHHU69HKA9UPlYa6htjVxk_bo1K-6c';
+const SUPPORT_TOKEN = process.env.SUPPORT_BOT_TOKEN || '';
 const TG = 'https://api.telegram.org/bot' + SUPPORT_TOKEN;
 
 function loadSupport() {
@@ -779,11 +799,19 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (route === '/api/register' && req.method === 'POST') {
+      if (rateLimited(req, 'register', 10)) return json(res, 429, { error: 'Слишком много попыток. Попробуй позже.' });
       const body = await readBody(req);
       const nick = String(body.nick || '').trim();
       const password = String(body.password || '');
       if (!/^[A-Za-z0-9_]{3,16}$/.test(nick)) return json(res, 400, { error: 'Ник: 3-16 символов, латиница, цифры и _' });
       if (password.length < 6) return json(res, 400, { error: 'Пароль минимум 6 символов' });
+      const guardOwnerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
+      if (nick.toLowerCase() === guardOwnerNick) {
+        const ownerKey = process.env.OWNER_KEY || '';
+        if (!ownerKey || String(body.ownerKey || '') !== ownerKey) {
+          return json(res, 403, { error: 'Ник владельца защищён ключом OWNER_KEY' });
+        }
+      }
 
       const existing = await store.findAccount(nick);
       if (existing) {
@@ -840,6 +868,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/api/login' && req.method === 'POST') {
+      if (rateLimited(req, 'login', 20)) return json(res, 429, { error: 'Слишком много попыток. Попробуй позже.' });
       const body = await readBody(req);
       let account = await store.findAccount(body.nick);
       if (account) {
@@ -903,6 +932,13 @@ const server = http.createServer(async (req, res) => {
       const nick = String(body.nick || '').trim();
       const password = String(body.password || '');
       if (!nick || password.length < 6) return json(res, 400, { error: 'Нужны ник и пароль (6+)' });
+      const guardOwnerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
+      if (nick.toLowerCase() === guardOwnerNick) {
+        const ownerKey = process.env.OWNER_KEY || '';
+        if (!ownerKey || String(body.ownerKey || '') !== ownerKey) {
+          return json(res, 403, { error: 'Ник владельца защищён ключом OWNER_KEY' });
+        }
+      }
       let account = await store.findAccount(nick);
       if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
       const locked = account.salt === 'reset' && account.hash === 'reset';
@@ -933,6 +969,13 @@ const server = http.createServer(async (req, res) => {
       }
       const account = await store.findAccount(nick);
       if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
+      const guardOwnerNick = (process.env.ADMIN_NICK || 'art1x').toLowerCase();
+      if (String(account.nick || '').toLowerCase() === guardOwnerNick) {
+        const ownerKey = process.env.OWNER_KEY || '';
+        if (!ownerKey || String(body.ownerKey || '') !== ownerKey) {
+          return json(res, 403, { error: 'Для восстановления владельца нужен OWNER_KEY' });
+        }
+      }
       if (!account.hwid || account.hwid.toLowerCase() !== hwid) {
         return json(res, 403, { error: 'Восстановление доступно только с привязанного ПК' });
       }
@@ -943,6 +986,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/api/account/owner-reset' && req.method === 'POST') {
+      if (rateLimited(req, 'owner-reset', 5, 60 * 60 * 1000)) return json(res, 429, { error: 'Слишком много попыток. Попробуй позже.' });
       const body = await readBody(req);
       const key = String(body.key || '');
       const expected = process.env.OWNER_KEY || '';
@@ -962,10 +1006,13 @@ const server = http.createServer(async (req, res) => {
       if (!account) return json(res, 404, { error: 'Аккаунт не найден' });
       const { salt, hash } = hashPassword(password);
       const updated = await store.setPassword(account.nick, salt, hash);
-      return json(res, 200, { profile: publicProfile(updated), reset: true });
+      return json(res, 200, { nick: updated.nick, role: updated.role, plan: updated.plan, reset: true });
     }
 
     if (route === '/api/launcher' && req.method === 'GET') {
+      const remote = String(req.socket && req.socket.remoteAddress || '');
+      const localRequest = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!localRequest) return json(res, 403, { error: 'forbidden' });
       const hwid = launcherHwid();
       const accounts = launcherAccounts().map((item) => ({ nick: item.Nick, role: item.Role || 'User' }));
       return json(res, 200, {
@@ -1254,8 +1301,8 @@ const server = http.createServer(async (req, res) => {
 
     if (route === '/v1/chat/clear' && req.method === 'POST') {
       const key = String(req.headers['x-chat-key'] || '');
-      const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
-      if (key !== expected) return json(res, 403, { error: 'forbidden' });
+      const expected = process.env.CHAT_ADMIN_KEY || '';
+      if (!expected || key !== expected) return json(res, 403, { error: 'forbidden' });
       await chatClear();
       return json(res, 200, { ok: true });
     }
@@ -1295,12 +1342,20 @@ const server = http.createServer(async (req, res) => {
 
     // ---------- telegram shop (Stars) ----------
     if (route === '/v1/entitlement' && req.method === 'GET') {
+      const shopSecret = process.env.TG_SHOP_SECRET || '';
+      if (!shopSecret) return json(res, 503, { error: 'shop disabled' });
       const nick = String(url.searchParams.get('name') || '').trim().toLowerCase();
       if (!nick) return json(res, 400, { error: 'bad name' });
+      const expected = crypto.createHmac('sha256', shopSecret).update('entitlement|' + nick).digest('hex');
+      const provided = String(req.headers['x-shop-signature'] || '').trim().toLowerCase();
+      if (!provided || provided.length !== expected.length
+          || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided))) {
+        return json(res, 403, { error: 'bad signature' });
+      }
       const account = await store.findAccount(nick);
-      if (!account) return json(res, 200, { exists: false, plan: null, plus: false });
+      if (!account) return json(res, 200, { exists: false, plus: false });
       const plan = String(account.plan || 'Classic');
-      return json(res, 200, { exists: true, nick: account.nick, plan, plus: plan.toLowerCase().includes('plus') });
+      return json(res, 200, { exists: true, plan, plus: plan.toLowerCase().includes('plus') });
     }
 
     if (route === '/v1/tg/purchase' && req.method === 'POST') {
@@ -1344,14 +1399,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/v1/keys/health' && req.method === 'GET') {
-      const backend = store.backend();
-      return json(res, 200, { ok: backend !== 'json', backend });
+      return json(res, 200, { ok: true });
     }
 
     // ---------- license keys (online shop) ----------
     if (route === '/v1/keys/issue' && req.method === 'POST') {
       try {
-        const shopSecret = process.env.TG_SHOP_SECRET || 'shade-shop-secret-2026';
+        const shopSecret = process.env.TG_SHOP_SECRET || '';
+        if (!shopSecret) return json(res, 503, { error: 'shop disabled' });
         const body = await readBody(req);
         const tier = String(body.tier || 'basic').toLowerCase();
         const telegramId = String(body.telegramId || '');
@@ -1386,6 +1441,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/v1/keys/redeem' && req.method === 'POST') {
+      if (rateLimited(req, 'keys-redeem', 30)) return json(res, 429, { error: 'Слишком много попыток. Попробуй позже.' });
       try {
         const account = await authAccount(req);
         if (!account) return json(res, 401, { error: 'Войди в лаунчер, чтобы активировать ключ' });
@@ -1509,8 +1565,8 @@ const server = http.createServer(async (req, res) => {
     // ---------- updater ----------
     if (route === '/api/mod/upload' && req.method === 'POST') {
       const key = String(req.headers['x-chat-key'] || '');
-      const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
-      if (key !== expected) return json(res, 403, { error: 'forbidden' });
+      const expected = process.env.CHAT_ADMIN_KEY || '';
+      if (!expected || key !== expected) return json(res, 403, { error: 'forbidden' });
       const version = String(url.searchParams.get('version') || '').trim().slice(0, 32);
       if (!version) return json(res, 400, { error: 'version required' });
       try {
@@ -1538,8 +1594,8 @@ const server = http.createServer(async (req, res) => {
 
     if (route === '/api/mod/publish' && req.method === 'POST') {
       const key = String(req.headers['x-chat-key'] || '');
-      const expected = process.env.CHAT_ADMIN_KEY || 'shade-chat-admin';
-      if (key !== expected) return json(res, 403, { error: 'forbidden' });
+      const expected = process.env.CHAT_ADMIN_KEY || '';
+      if (!expected || key !== expected) return json(res, 403, { error: 'forbidden' });
       const body = await readBody(req);
       const version = String(body.version || '').trim().slice(0, 32);
       const url = String(body.url || '').trim().slice(0, 500);
