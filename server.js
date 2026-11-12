@@ -802,6 +802,31 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (route === '/v1/setup/secrets' && req.method === 'POST') {
+    try {
+      const ownerKey = process.env.OWNER_KEY || '';
+      const provided = String(req.headers['x-owner-key'] || '');
+      if (!ownerKey || provided !== ownerKey) return json(res, 403, { error: 'forbidden' });
+      if (rateLimited(req, 'setup', 20)) return json(res, 429, { error: 'too many attempts' });
+      if (!store.getState || !store.setState) return json(res, 503, { error: 'db required' });
+      const body = await readBody(req);
+      const allowed = ['TG_SHOP_SECRET', 'TG_WEBHOOK_SECRET', 'CHAT_ADMIN_KEY', 'TG_SHOP_BOT_TOKEN', 'TG_SHOP_ADMIN_ID'];
+      let current = {};
+      try { current = JSON.parse((await store.getState('app_secrets')) || '{}'); } catch { current = {}; }
+      for (const key of allowed) {
+        if (body[key] != null && String(body[key]).length > 0) {
+          current[key] = String(body[key]);
+          process.env[key] = String(body[key]);
+        }
+      }
+      await store.setState('app_secrets', JSON.stringify(current));
+      return json(res, 200, { ok: true, present: Object.keys(current) });
+    } catch (error) {
+      console.error('[setup] secrets failed', error && error.message);
+      return json(res, 500, { error: 'setup failed' });
+    }
+  }
+
   if (route === '/tg/health' && req.method === 'GET') {
     return json(res, 200, { ok: true, shop: true, price: tgShopBot.PRICE });
   }
@@ -1763,7 +1788,24 @@ ensureAvatarTable().catch(() => {});
 ensurePersistence().catch(() => {});
 ensureStatsTable().catch(() => {});
 console.log('[shop] env present:', ['OWNER_KEY', 'TG_SHOP_SECRET', 'TG_WEBHOOK_SECRET', 'CHAT_ADMIN_KEY', 'TG_SHOP_ADMIN_ID', 'TG_SHOP_BOT_TOKEN'].filter((name) => Boolean(process.env[name])).join(', ') || 'none');
+async function loadAppSecrets() {
+  try {
+    if (!store.getState) return;
+    const raw = await store.getState('app_secrets');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    for (const key of Object.keys(data)) {
+      if (data[key] && !process.env[key]) process.env[key] = String(data[key]);
+    }
+    console.log('[setup] secrets loaded from db');
+  } catch (error) {
+    console.warn('[setup] secrets load failed:', error && error.message);
+  }
+}
+
+loadAppSecrets().finally(() => {
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log('ShadeVisuals site + API: http://127.0.0.1:' + PORT);
   console.log('profile: http://127.0.0.1:' + PORT + '/profile.html');
+});
 });
