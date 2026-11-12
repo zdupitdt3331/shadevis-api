@@ -1762,6 +1762,7 @@ const server = http.createServer(async (req, res) => {
 ensureAvatarTable().catch(() => {});
 ensurePersistence().catch(() => {});
 ensureStatsTable().catch(() => {});
+console.log('[shop] env present:', ['OWNER_KEY', 'TG_SHOP_SECRET', 'TG_WEBHOOK_SECRET', 'CHAT_ADMIN_KEY', 'TG_SHOP_ADMIN_ID', 'TG_SHOP_BOT_TOKEN'].filter((name) => Boolean(process.env[name])).join(', ') || 'none');
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log('ShadeVisuals site + API: http://127.0.0.1:' + PORT);
   console.log('profile: http://127.0.0.1:' + PORT + '/profile.html');
