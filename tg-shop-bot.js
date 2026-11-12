@@ -21,6 +21,7 @@ const TIERS = {
 const pendingHwid = new Map();
 
 const CURRENCY = 'XTR';
+const LOADER_URL = 'https://workupload.com/file/TAQCB2qgk7c';
 function adminId() { return String(process.env.TG_SHOP_ADMIN_ID || ''); }
 
 function token() {
@@ -458,29 +459,11 @@ async function handleSetupDocument(message, deps) {
 }
 
 async function deliverSetup(chatId, deps) {
-  let info = null;
-  try {
-    const stored = deps.store && deps.store.getState ? await deps.store.getState('tg_shop_setup') : null;
-    if (stored) info = JSON.parse(stored);
-  } catch (error) {
-    console.error('[tg-shop] setup state read failed', error && error.message);
-  }
-  if (!info) info = readJson(path.join(dataDir(deps), 'tg-shop-setup.json'), null);
-  if (info && info.fileId) {
-    const result = await tg('sendDocument', {
-      chat_id: chatId,
-      document: info.fileId,
-      parse_mode: 'HTML',
-      caption: '<b>📦 ShadeVisuals Setup</b>\n\nЗапусти установщик и войди в аккаунт — визуалы уже открыты.',
-    });
-    if (result.ok) return;
-    console.error('[tg-shop] sendDocument failed', JSON.stringify(result).slice(0, 200));
-  }
   await tg('sendMessage', {
     chat_id: chatId,
     parse_mode: 'HTML',
-    text: '<b>📦 Скачать ShadeVisuals Loader</b>\n\nНажми кнопку ниже — установщик скачается с сервера. После установки войди в аккаунт.',
-    reply_markup: { inline_keyboard: [[{ text: '⬇️ Скачать лоудер', url: SHOP_URL + '/v1/loader/download' }]] },
+    text: '<b>📦 ShadeVisuals Loader</b>\n\nСкачай установщик по кнопке ниже, запусти и войди в аккаунт.',
+    reply_markup: { inline_keyboard: [[{ text: '⬇️ Скачать лоудер бесплатно', url: LOADER_URL }]] },
   });
 }
 
