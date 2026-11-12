@@ -94,6 +94,12 @@ CREATE TABLE IF NOT EXISTS cloud_messages (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_id ON cloud_messages (id);
+CREATE TABLE IF NOT EXISTS mod_files (
+  version VARCHAR(32) PRIMARY KEY,
+  data BYTEA NOT NULL,
+  size BIGINT NOT NULL,
+  created_at BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS bot_state (
   name VARCHAR(64) PRIMARY KEY,
   state_value TEXT NOT NULL DEFAULT '',
@@ -523,6 +529,25 @@ function ensureBotStateMysql() {
     mysqlStateReady = mysqlPool.query('CREATE TABLE IF NOT EXISTS bot_state (name VARCHAR(64) PRIMARY KEY, state_value TEXT NOT NULL, updated_at BIGINT NOT NULL)').catch(() => null);
   }
   return mysqlStateReady;
+}
+
+
+async function saveModFile(version, buffer) {
+  if (!pgPool) throw new Error('db required');
+  await pgPool.query(
+    'INSERT INTO mod_files (version, data, size, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (version) DO UPDATE SET data = $2, size = $3, created_at = $4',
+    [String(version), buffer, buffer.length, Date.now()]
+  );
+  return true;
+}
+
+async function getModFile(version) {
+  if (!pgPool) return null;
+  const query = version
+    ? ['SELECT data FROM mod_files WHERE version = $1 LIMIT 1', [String(version)]]
+    : ['SELECT data FROM mod_files ORDER BY created_at DESC LIMIT 1', []];
+  const { rows } = await pgPool.query(query[0], query[1]);
+  return rows[0] ? rows[0].data : null;
 }
 
 module.exports = {
